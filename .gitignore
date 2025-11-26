@@ -1,0 +1,91 @@
+/Debug/
+/Release/
+_build/
+build/
+buildEm/
+buildMock/
+/Makefile.local
+/logs/
+/Debug52/
+/deploy/current.txt
+dist/
+
+# Cppcheck
+a-cppcheck-build-dir/
+cppcheck.cppcheck
+
+/NRF51_BOARD/
+enc_temp_folder
+/config/featureset.h
+
+fruityloader/_debug/
+fruityloader/.settings/
+
+# Visual Studio ignore
+.vs/
+*.suo
+*.userosscache
+*.sln.docstates
+*.user
+*.userprefs
+
+# VsCode ignore
+.vscode
+
+# Eclipse
+.classpath
+.project
+.settings/
+
+#Documentation
+node_modules/
+ui-bundle.zip
+
+## Intellij
+.idea/
+*.iml
+*.iws
+
+# OSX
+.DS_Store
+
+# Fruity-API
+## Maven
+fruity-api/target
+fruity-api/results
+fruity-api/log
+dependency-reduced-pom.xml
+
+## Gradle
+.gradle
+!gradle/wrapper/gradle-wrapper.jar
+fruity-api/build/
+
+## Java
+*.class
+
+## Logs
+fruity-api/testlog.*
+
+# CherrySim Test
+packages/
+
+# cmake
+cmake_build*
+
+# Gitlab
+TestReplay.log
+
+# Flash storage files
+*TestFlashStorageFile.bin
+*CherrySimFlashState.bin
+cmake_build*
+
+# Source Distributions files
+sourceDistributions/*
+
+/sdk/wiced_btsdk/dev-kit/baselib/20819A1/build
+/sdk/wiced_btsdk/dev-kit/bsp/TARGET_CYW920819EVB-02/build
+
+.cache/clangd/index
+compile_commands.json

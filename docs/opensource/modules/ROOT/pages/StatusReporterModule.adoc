@@ -1,0 +1,409 @@
+= Status Reporter Module (ID 3)
+
+== Purpose
+The _StatusReporterModule_ with _ModuleId_ 3 reports the node status in a configured interval. It provides methods for directly requesting different kinds of device info and status data.
+
+== Functionality
+The _StatusReporterModule_ can periodically send out
+different kinds of informational messages. It also feeds the watchdog
+when keep alive messages are received. It is responsible for sending out
+logged error codes and measuring the necessary data for its messages
+such as the battery power.
+
+== Terminal Commands
+=== Device Information
+Generic information about a node that never changes or only changes through enrollment or firmware updates can be requested via the _get_device_info_ command.
+
+[source,C++]
+----
+//Request the full device info from some nodes
+action [nodeId] status get_device_info
+----
+
+=== Status Information
+Information that is bound to change from time to time can be requested using the _get_status_ command.
+
+[source,C++]
+----
+//Request the status
+action [nodeId] status get_status
+----
+
+[#ConnectionInformation]
+=== Connection Information
+Information about the mesh connections of a node can be requested with the _get_connections_ or _get_nearby_ commands.
+
+[source,C++]
+----
+//Retrieve the connections from all nodes in the network
+action [nodeId] status get_connections
+----
+
+[source,C++]
+----
+//Retrieve nearby nodes with the same network id
+action [nodeId] status get_nearby
+----
+
+Information about all connections with a lot of detail can be requested with the _get_connections_verbose_ command. In scenarios with limited queue sizes, only single connections can be requested via an optional index parameter, as returned by the GetConnections method of the ConnectionManager.
+
+[source,C++]
+----
+//Retrieve detailed connection information from the node with nodeId.
+action [nodeId] status get_connections_verbose
+
+//Same, but only for the connection with the given index.
+action [nodeId] status get_connections_verbose {index}
+----
+
+[#LiveReports]
+=== Live Reports
+Live reports are a way to send information about errors, connections, disconnections and other important events to the user through the mesh. Each live report has a unique ID according to its importance. Liver reports are activated by setting the _livereports_ level to a value greater than 0. The different levels are:
+
+* Off (0)
+* Error (50)
+* Warn (100)
+* Info (150)
+* Debug (200)
+
+Live reports can be generated in the firmware using the `SendLiveReport` method. Two extra parameters can be given that can contain additional information for the specific report/error. The meaning of the extras is documented at the LiveReportType definition. LiveReports will of course only be received if the node is currently part of the mesh. If this is not the case, than it might be better to use the xref:#ErrorLog[error log].
+
+[source,C++]
+----
+//Set the livereport level
+action [nodeId] status livereports [liveReportLevel]
+
+//Activate livereports for all errors on all nodes
+action 0 status livereports 50
+----
+
+Live reports are printed on the terminal of a sink node and can be used to debug a problem in a running system:
+
+[source,Javascript]
+----
+{"type":"live_report","nodeId":123,"module":3,"code":1,"extra":2,"extra2":3}
+----
+
+[#ErrorLog]
+=== Error Log
+The error log stores metrics and errors that help monitoring the mesh. This information can be periodically queried e.g. by a gateway. More information is available on the dedicated xref:ErrorLog.adoc[error log page].
+
+`action [nodeId] status get_errors`
+
+The queried nodes will respond with their complete error log that they have stored in RAM. The error log is cleared on reboot as it is only stored in RAM and is also cleared after it was queried. The error log is printed on a sink node (or any other if json logging is active) as multiple json objects.
+
+.Exemplary response on a sink node
+[source,Javascript]
+----
+{"type":"error_log_entry","nodeId":2,"module":3,"errType":2,"code":22,"extra":59,"time":10000,"typeStr":"CUSTOM","codeStr":"COUNT_JOIN_ME_RECEIVED"}
+{"type":"error_log_entry","nodeId":2,"module":3,"errType":2,"code":86,"extra":10030,"time":10030,"typeStr":"CUSTOM","codeStr":"INFO_UPTIME_ABSOLUTE"}
+{"type":"error_log_entry","nodeId":2,"module":3,"errType":2,"code":20,"extra":6,"time":10030,"typeStr":"CUSTOM","codeStr":"INFO_ERRORS_REQUESTED"}
+----
+
+=== Component periodic timestamp sending
+The StatusReporterModule includes functionality for periodically sending the nodes current timestamp. 
+It has temporary and persistent time reporting functionality.
+
+Temporary time reporting can be enabled and disabled via component_act. When enabled, it is automatically disabled after a few minutes to avoid unnecessary battery usage.
+
+[source,C++]
+----
+//Enables Periodic sending
+component_act [nodeId] 3 2 0xABCD 0x1234 01 [requestHandle]
+
+//Disabled Periodic sending
+component_act [nodeId] 3 2 0xABCD 0x1234 00 [requestHandle]
+----
+
+Persistent time reporting is enabled with the terminal command:
+
+```Terminal
+action [nodeId] status set_time_reporting [intervalDs]
+```
+
+_intervalDs_ .. Time reporting interval in deci seconds.
+An interval of `0` means no time reporting.
+
+The immediate confirmation message should look like this:
+```json
+{"type":"time_reporting_state","intervalDs":10,"nodeId":2,"module":3,"code":0}
+```
+
+Upon activation, the time is reported with multiple component_sense messages that roughly look like this example:
+
+[source,Javascript]
+----
+{"nodeId":33011,"type":"component_sense","module":3,"requestHandle":13,"actionType":0,"component":43981,"register":4660,"payload":"AgAAAA=="}
+----
+
+The payload of the answer is the base 64 timestamp of the target node.
+
+[#UsbGwStatus]
+=== Gateway status for Sink Nodes with USB support
+For nodes that use the `ACTIVATE_ONLY_SINK_FUNCTIONALITY` and the `ACTIVATE_VIRTUAL_COM_PORT` defines, the current USB serial Terminal and Gateway status can be retreived and updated.
+
+This value is stored as a `u8` in RAM only. It is updated
+
+* always when calling `set_gw_status`
+* when calling `get_gw_status` to ensure that an up to date serial status is provided
+** When USB is not initialized, it is set to `USB_PORT_NOT_CONNECTED(2)`
+** When USB is initialized and wasn't before, it is set to `USB_PORT_CONNECTED(1)`
+
+==== Set Gateway status
+The gateway status can be set to any number from 10 to 255. However, only the following values are defined as an enum:
+
+[#SetGatewayStatusEnum]
+===== Enum
+```cpp
+enum class GatewayStatus : u8 {
+    // 0..9 from firmware side
+    UNKNOWN = 0,
+    USB_PORT_CONNECTED = 1,
+    USB_PORT_NOT_CONNECTED = 2, // overwrites the other states
+    // 10.. set from outside, overwrites USB_PORT_CONNECTED
+    READY = 10, //Serial communication handshake done
+    USB_PORT_CONNECTED_BUT_UNKNOWN_STATUS = 11, // when the gateway failed to determine current state
+    READY_BUT_NO_BLUERANGE_CONNECTION = 12, // no server connection
+    READY_BUT_NOT_ENROLLED = 13,
+    READY_BUT_NO_MESH_CONNECTION = 14, // enrolled but no other node is enrolled
+};
+```
+
+The response is the current Gateway status:
+
+```Terminal
+action [nodeId] status set_gw_status [status]
+
+// Example
+action this status set_gw_status 10
+// Example response
+{"type":"gw_status","nodeId":2,"module":3,"status":10}
+```
+
+==== Get Gateway status
+As noted xref:#UsbGwStatus[in the introduction], the Gateway status can be updated by the node when calling `get_gw_status`.
+
+```Terminal
+action [nodeId] status get_gw_status
+
+// Example
+action this status get_gw_status
+// Example response: node just started -> UNKNOWN
+{"type":"gw_status","nodeId":2,"module":3,"status":0}
+
+// ... USB plugged in
+action this status get_gw_status
+{"type":"gw_status","nodeId":2,"module":3,"status":1}
+
+// ... Gateway sets the status
+action this status set_gw_status
+{"type":"gw_status","nodeId":2,"module":3,"status":10}
+
+// ... USB unplugged
+action this status get_gw_status
+{"type":"gw_status","nodeId":2,"module":3,"status":2}
+```
+
+== Messages
+
+=== Device Info (v2)
+==== Request
+
+[cols="1,2,2,5"]
+|===
+|Bytes |Type |Name  |Description
+
+|8 |xref:Specification.adoc#connPacketModule[connPacketModule] |header|*messageType:* MODULE_TRIGGER_ACTION(51), *actionType:* GET_DEVICE_INFO_V2(10)
+|===
+
+==== Response
+
+The device info contains information about the device that is not
+changing often, e.g. only after a firmware update or an enrollment.
+
+[cols="1,2,2,5"]
+|===
+|Bytes |Type |Name |Description
+
+|8 |xref:Specification.adoc#connPacketModule[connPacketModule] |header|*messageType:* MODULE_ACTION_RESPONSE(52), *actionType:* DEVICE_INFO_V2(10)
+|2 |u16 |manufacturerId |ID according to Bluetooth SIG Assigned numbers
+company identifiers
+|4 |u32 |serialNumberIndex |Index of the xref:Specification.adoc#SerialNumbers[serial number], can be converted
+with alphabet
+|8 |u64 |chipId |A unique ID of the nRF chip
+|7 ||gapAddress |1 byte address type, 6 byte BLE address
+|2 |u16 |networkid |The network id
+|4 |u32 |nodeVersion |Version of the node (10000000 * MAJOR + 10000 *
+MINOR + PATCH)
+|1 |i8 |dbmRx |Receive power in dBm (signed)
+|1 |i8 |dbmTx |Transmit power in dBm (signed)
+|1 |u8 |deviceType |cf. xref:Specification.adoc#deviceTypes[Device Types]
+|1 |i8 |calibratedTx |Calibrated TX power at 1m distance (signed)
+|2 |u16 |chipGroupId |Group ID for the chip (e.g. NRF52)
+|2 |u16 |featuresetGroupId |Group ID for the firmware featureset (used
+for firmware update). Matching groups are allowed to receive the firmware.
+|2 |u16 |bootloaderVersion |Version of the bootloader
+|===
+
+=== Status
+
+==== Request
+|===
+|Bytes |Type |Description
+
+|8 |xref:Specification.adoc#connPacketModule[connPacketModule] |*messageType:* MODULE_TRIGGER_ACTION(51), *actionType:* GET_STATUS(1)
+|===
+
+==== Response
+The device status contains information that is changing from time to time.
+
+[cols="1,2,4"]
+|===
+|Bytes|Type|Description
+
+|8|xref:Specification.adoc#connPacketModule[connPacketModule]|*messageType:* MODULE_ACTION_RESPONSE(52), *actionType:* STATUS(1)
+|2|clusterSize|Size of the cluster that the node is connected to (current mesh size)
+|2|inConnectionPartner|NodeId of the node that is connected to the one and only peripheral connection with this node.
+|1|inConnectionRssi|RSSI of the incoming connection
+|2 bit|freeIn|Number of free mesh connections as peripheral
+|6 bit|freeOut|Number of free mesh connections as central
+|1|batteryInfo|Battery voltage
+|1|connectionLossCounter|Counter of how many mesh connections were dropped
+|1 bit|initializedByGateway|If the gateway has initialized this beacon and sent the _SET_INITIALIZED_ command, this bit will be 1 until a reboot is encountered
+|7 bit|reserved|
+|===
+
+=== Connections
+Query all nodeIDs that a node is connected to including the connection rssi. The first entry is the incoming connection, the others are outgoing.
+
+==== Request
+[cols="1,2,4"]
+|===
+|Bytes |Type |Description
+
+|8 |xref:Specification.adoc#connPacketModule[connPacketModule] |*messageType:* MODULE_TRIGGER_ACTION(51), *actionType:* GET_ALL_CONNECTIONS(3)
+|===
+
+==== Response
+[cols="1,2,4"]
+|===
+|Bytes|Type|Description
+
+|8|xref:Specification.adoc#connPacketModule[connPacketModule]|*messageType:* MODULE_ACTION_RESPONSE(52), *actionType:* ALL_CONNECTIONS(3)
+|3*x|connections|Array of all _partnerEntries_
+|===
+
+===== PartnerEntry
+[cols="1,2,4"]
+|===
+|Bytes|Type|Description
+
+|2|partnerId|_nodeId_ of the connected node
+|1|rssi|RSSI as a signed integer
+|===
+
+=== Nearby Nodes
+Returns all nodes (limited to some maximum count) that are surrounding the node with the same networkId.
+
+==== Request
+[cols="1,2,4"]
+|===
+|Bytes |Type |Description
+
+|8 |xref:Specification.adoc#connPacketModule[connPacketModule] | *messageType:* MODULE_TRIGGER_ACTION(51), *actionType:* GET_NEARBY_NODES(4)
+|===
+
+==== Response
+[cols="1,2,4"]
+|===
+|Bytes|Type|Description
+
+|8|xref:Specification.adoc#connPacketModule[connPacketModule]|*messageType:* MODULE_ACTION_RESPONSE(52), *actionType:* NEARBY_NODES(4)
+|3*x|nearbyNodes|Array of _NearbyNodeEntries_
+|===
+
+===== NearbyNodeEntry
+[cols="1,2,4"]
+|===
+|Bytes|Type|Description
+
+|2|nodeId|The
+nodeId of the nearby node |1|rssi| The RSSI as a signed integer
+|===
+
+=== Live Reports
+The _statusReporterModule_ can send live reports that
+notify the user over various state changes and error conditions. A live
+report is generated for a node and then broadcast over the mesh.
+This allows live debugging of mesh errors, e.g. if two nodes
+are not connecting to each other. Live reports are also received over
+_MeshAccessConnection_, which means an error can be detected after connecting
+to the disconnected part of the mesh using a _MeshAccessConnection_.
+
+[source,C++]
+----
+enum LiveReportTypes {
+    LIVE_REPORT_TYPES_ERROR = 0,
+    LIVE_REPORT_TYPES_WARN = 50,
+    //========
+    LIVE_REPORT_TYPES_INFO = 100,
+    LIVE_REPORT_TYPE_GAP_CONNECTED_INCOMING, //extra is connHandle, extra2 is 4 bytes of gap addr
+    LIVE_REPORT_TYPE_GAP_TRYING_AS_MASTER, //extra is partnerId, extra2 is 4 bytes of gap addr
+    LIVE_REPORT_TYPE_GAP_CONNECTED_OUTGOING, //extra is connHandle, extra2 is 4 byte of gap addr
+    LIVE_REPORT_TYPE_GAP_DISCONNECTED, //extra is partnerid, extra2 is hci code
+
+    LIVE_REPORT_TYPE_HANDSHAKE_FAIL,
+    LIVE_REPORT_TYPE_MESH_CONNECTED, //extra is partnerid, extra2 is asWinner
+    LIVE_REPORT_TYPE_MESH_DISCONNECTED, //extra is partnerid, extra2 is appDisconnectReason
+
+    //========
+    LIVE_REPORT_TYPES_DEBUG = 150,
+    LIVE_REPORT_TYPE_DECISION_RESULT //extra is decision type, extra2 is preferedPartner
+};
+----
+
+==== Event
+[cols="1,2,4"]
+|===
+|Bytes|Type|Description
+
+|8|xref:Specification.adoc#connPacketModule[connPacketModule]|*messageType:* MODULE_GENERAL(53), *actionType:* LIVE_REPORT(1)
+|1|reportType|Of type _LiveReportType_
+|4|extra|Additional data regarding the event, depending on _reportType_
+|4|extra2|Additional data regarding the event, depending on _reportType_
+|===
+
+
+==== Keep Alive
+
+The `SET_KEEP_ALIVE` message is used to validate the `hopsToSink` field on nodes in the mesh network.
+This feature is part of xref:SinkRouting.adoc[sink routing].
+
+[cols="1,2,4"]
+|===
+|Bytes|Type|Description
+
+|8|xref:Specification.adoc#connPacketModule[connPacketModule]|*messageType:* MODULE_TRIGGER_ACTION(51), *actionType:* SET_KEEP_ALIVE(9)
+|1 bit|fromSink|If the sender of the message is a sink
+|7 bits|reserved|Reserved
+|===
+
+=== Get Gateway status
+==== Request
+
+[cols="1,2,2,5"]
+|===
+|Bytes |Type |Name  |Description
+
+|8 |xref:Specification.adoc#connPacketModule[connPacketModule] |header|*messageType:* MODULE_TRIGGER_ACTION(51), *actionType:* GET_GATEWAY_STATUS(14)
+|===
+
+==== Response
+
+[cols="1,2,2,5"]
+|===
+|Bytes |Type |Name |Description
+
+|8 |xref:Specification.adoc#connPacketModule[connPacketModule] |header|*messageType:* MODULE_ACTION_RESPONSE(52), *actionType:* GATEWAY_STATUS(14)
+|1 |u8 |gatewayStatus |see xref:#SetGatewayStatusEnum[enum above]
+|===

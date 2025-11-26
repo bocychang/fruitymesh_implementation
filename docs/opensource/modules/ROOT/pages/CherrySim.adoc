@@ -1,0 +1,403 @@
+ifndef::imagesdir[:imagesdir: ../assets/images]
+= CherrySim
+
+== General
+CherrySim uses the codebase of FruityMesh and provides a *SoftDevice abstraction layer* that simulates Bluetooth connections, advertising, flash access and much more. It gives the possibility to debug, develop and simulate multiple FruityMesh nodes on a development PC.
+
+We are *developing and debugging most new features using CherrySim* which is a real time saver and swiss army knife. You will be able to do implement most of your application logic in the simulator with the ability to mock away drivers. If you are developing with FruityMesh you should consider using the simulator for your *day-to-day development*.
+
+image:cherrysim.png[cherrysim]
+
+== Functionality
+* Simulates all nodes in a time step based simulation
+* Full support for simulating *different featuresets* at the same time creating a heterogenous mesh
+* Allows *easy xref:#Debugging[debugging]* of mesh-behaviour with a deterministic pseudo random number generator
+* Includes CherrySimRunner for xref:#Terminal[manual testing] and simulation
+* xref:#CherrySimTester[CherrySimTester] is used for *automated testing* using the google test framework
+* Mesh state xref:#Visualization[visualization] in your web browser: http://localhost:5555/
+* xref:#SocketTerm[SocketTerm] for connecting multiple terminals using TCP sockets
+* xref:NativeCherrySimRenderer.adoc[Native Renderer] for *real time visualization*
+
+== Setting up the build environment
+The build environment can be set up by following the instructions under xref:BuildingWithCMake.adoc#BuildingSimulator[Building with CMake].
+
+== Building
+See xref:BuildingWithCMake.adoc#BuildingSimulator[here] for a guide how to build the Simulator.
+
+== How It Works
+CherrySim uses a header file _SystemTest.h_ that is force-included before all other header files to be able to abstract the SoftDevice. All SoftDevice calls are implemented in a way to closely mock the functionality of a real SoftDevice. For everything that uses the radio, such as advertising or connections, a simplified simulation is used that calculates the distances between nodes and simulates packet loss.
+
+CherrySim works with only one instance and is able to simulate many instances of FruityMesh. Hence FruityMesh must be written in a way that the code itself has no state variables. No global or functional static variables are allowed. Every variable that needs to be saved from one function call to the next needs to be a part of class since CherrySim creates instances of classes for every node. The `GlobalState.cpp` is used to store the whole state of a node and CherrySim switches the pointer to the currently simulated node for each simulation step.
+
+CherrySim gives each node a different xref:Specification.adoc#SerialNumbers[serial numbers] starting at `BBBBB` and incrementing. Every forth byte of the node key, starting with the first byte is equal to the xref:Specification.adoc#SerialNumbers[serial number] index + 1. So for example, `BBBBB` has the node key `01:00:00:00:01:00:00:00:01:00:00:00:01:00:00:00`, `BBBBC` has the node key `02:00:00:00:02:00:00:00:02:00:00:00:02:00:00:00` and so on. By default, all nodes have the same networkId and networkKey so that they are in the same mesh network. If this is not desired, the simulated UICR can be overwritten or the nodes can be enrolled using the standard enrollment command. Default featuresets are given to each node but the featureset can also be individually configured for each node.
+
+[#Visualization]
+== Visualization
+Open http://localhost:5555/ in a web browser while the simulator is running and simulating.
+
+The Webserver serves the FruityMap for visualization and has some endpoints that serve dynamic JSONs that reflect the current mesh state. Be aware that the visualization shows the GAP connections and not the MeshConnections. This is an important difference. If all MeshConnections are handshaked, in a stable state and if there are no implementation errors, these visualizations match.
+
+The connections are presented using arrows which originate from the central and point to the peripheral. The black dots represent the connection master bits. *RSSI / globalConnectionId* is shown for each connection while the nodes show "nodeId / clusterSize".
+
+The LEDs are also visualized but all LED changes are mapped to a single one.
+
+[#Terminal]
+== Terminal Commands
+=== General
+The simulator has a terminal that allows to input all commands that can be used with FruityMesh nodes. Depending on the simulator configuration (`simConfig.terminalId`), either no terminal is enabled (-1), all terminals are active (0) or the terminal of a specific node is active, e.g. 1. Additionally, the simulator adds a few commands for simulation control:
+
+[source,c++]
+----
+sim term [terminalId] // e.g. "sim term 1" to interact with the first node
+----
+The active terminal can be either 0 to see the terminal output of all nodes at the same time, or you can give the terminal id of a single node. The terminal id is equal to `nodeIndex + 1` (the _default_ node id), see the xref:#FeaturesetSimulation[documentation on featureset simulation] on how the node index is assigned. If you do _not_ change the node id (e.g. via enrollment) after the simulator starts, then the terminal id and node id will be the same. Additionally, the terminal id of a node will stay the same during the whole simulation and is _not_ affected by enrollments. Afterwards, you can directly interact with that node with the usual FruityMesh terminal commands.
+
+In xref:#SocketTerm[socket terminals] only strictly positive terminal ids - referring to a single node - can be used (i.e. you _cannot_ specify `0`).
+
+[source,c++]
+----
+sim stat
+----
+This command gives an overview of all available commands. Also, a number of _SIMSTATCOUNT_ and _SIMSTATAVG_ macros are spread throughout the code that are used to collect statistics. The results are also shown by this command.
+
+[source,c++]
+----
+sim nodes [numNodes] [featureSet] // e.g. "sim nodes 10 prod_mesh_nrf52" to start a simulation with 10 randomly placed nodes with the prod_mesh_nrf52 feature set.
+----
+Using the nodes command allows you to restart the simulation with a different number of nodes.
+
+[source,c++]
+----
+sim seedr [seedValue] // e.g. "sim seedr 123" to restart the simulation with this seed
+----
+As the simulation is deterministic, you can always restart it either with the same seed to get the same simulation output or choose a different seed.
+
+=== Positions
+The following commands change positions of nodes.
+
+[source,c++]
+----
+sim set_position [serial] [x] [y] [z] //e.g. sim set_position BBBBD 0.5 0.21 1.7
+----
+Sets the position (in meters) in the virtual environment of the node with the xref:Specification.adoc#SerialNumbers[serial number] BBBBD to (0.5 / 0.21 / 1.7). Stops the animation of the given node, if one is playing. Note: The third axis is the height axis.
+
+[source,c++]
+----
+sim set_position_norm [serial] [x] [y] [z] //e.g. sim set_position_norm BBBBD 0.5 0.21 1.7
+----
+Same as set_position, but relative to the normalized simulated environment dimensions instead of in meters.
+
+[source,c++]
+----
+sim add_position [serial] [x] [y] [z] //e.g. sim add_position BBBBD -0.17 0.23 12
+----
+Adds to the position (in meters) in the virtual environment of the node with the xref:Specification.adoc#SerialNumbers[serial number] BBBBD. Stops the animation of the given node, if one is playing. Note: The third axis is the height axis.
+
+[source,c++]
+----
+sim add_position_norm [serial] [x] [y] [z] //e.g. sim add_position_norm BBBBD 0.5 0.21 1.7
+----
+Same as add_position, but relative to the normalized simulated environment dimensions instead of in meters.
+
+=== Animations
+The following commands can be used to play movement animations on nodes so that they move along a specified path.
+
+[source,c++]
+----
+sim animation create [name] //e.g. sim animation create my_animation
+----
+Create a new, empty animation.
+
+[source,c++]
+----
+sim animation remove [name] //e.g. sim animation remove my_animation
+----
+Removes an animation by name.
+
+[source,c++]
+----
+sim animation exists [name] //e.g. sim animation exists my_animation
+----
+Checks if an animation with name exists. The command is answered with the following JSON:
+[source,java]
+----
+{
+    "type":"animation_exists",
+    "name":"name_of_animation",
+    "exists":true
+}
+----
+Where name is the name of this animation given by the command.
+
+[source,c++]
+----
+sim animation set_default_type [name] [type] //e.g. sim animation set_default_type my_animation 2
+----
+Sets the default interpolation type of an animation. If a key point does not specify a type, is has the default type of the animation. The type can be:
+[source,c++]
+----
+	LERP = 0,    //Linear interpolation
+	COSINE = 1,  //Linear interpolation with slow start and end
+	BOOLEAN = 2, //Stays at the start location for 50% of the time, then teleports to the end location and stays there.
+----
+
+[source,c++]
+----
+sim animation add_keypoint [x] [y] [z] [durationSec] {type} //e.g. sim animation add_keypoint 1 2 3 10 0
+----
+Adds a new keypoint to an animation with x/y/z in relative coordinate space. The keypoint is reached after the previous keypoint after durationSec seconds. The type is optional. If none is given, the type set by set_default_type is used.
+
+[source,c++]
+----
+sim animation set_looped [name] [1/0] //e.g. sim animation set_looped 1
+----
+Set the animation to be looped or not looped.
+
+[source,c++]
+----
+sim animation is_running [serial] //e.g. sim animation is_running BBCBC
+----
+Checks if a node has an animation that is currently playing. The command is answered by the following JSON:
+[source,java]
+----
+{
+    "type":"animation_is_running",
+    "serial":"BBCBC",
+    "code":1
+}
+----
+Where code is 1 if it has an animation playing and 0 if it doesn't.
+
+[source,c++]
+----
+sim animation get_name [serial] //e.g. sim animation get_name BBCBC
+----
+Gets the name of the animation that is currently playing on a node. The command is answered by the following JSON:
+[source,java]
+----
+{
+    "type":"animation_get_name",
+    "serial":"BBCBC",
+    "name":"my_animation"
+}
+----
+Where name is the name of the animation that is currently playing or the string "NULL" if none is playing.
+
+[source,c++]
+----
+sim animation start [serial] [name] //e.g. sim animation start BBCBC my_animation
+----
+Starts an animation with the name "name" of the node with the given xref:Specification.adoc#SerialNumbers[serial number].
+
+NOTE: Once an animation has been started on a node, changing the animation with any command has no effect on the animation currently playing on the node. Changes to an animation only have an effect on future animation start commands.
+
+[source,c++]
+----
+sim animation stop [serial] //e.g. sim animation stop BBCBC
+----
+Stops an animation on the node with the given xref:Specification.adoc#SerialNumbers[serial number].
+
+[source,c++]
+----
+sim animation shake [serial] //e.g. sim animation shake BBCBC
+----
+Touches a node without moving it to another position so that its accelerometer wakes up if it uses one.
+
+[source,c++]
+----
+sim animation load_path [path] //e.g. sim animation load_path /path/to/anim.json
+----
+Loads animations from a JSON file. See "cherrysim/test/res/MoveAnimation.json" for an example.
+
+NOTE: The path is always relative to the normalized path, which is the "cherrySim" directory in the repository. This means that played animations must be part of the FruityMesh repository. This is mandatory as else the replay function will not work properly.
+
+Using commands such as *nodes 20*, *width 40*, *height 50* allows to modify the simulation scenario. Scenarios can also be imported as JSON files by first giving the paths (*site site1.json*, *devices dev1.json*) and then enabling JSON import (*json 1*). Each simulation is always run deterministically with a preset seed. This seed can be modified using e.g. *seed 123*, which will result in a new simulation.
+
+[#Debugging]
+== Debugging
+CherrySim is great for debugging issues that only arise with multiple nodes. As you are able to add nodes with different featuresets, you can easily simulate this network and debug the node interaction.
+
+=== Reproducible Simulation
+All parts of CherrySim use a pseudo random number generator that is initialized with a user-given seed. This means that the simulation will always produce the exact same results on each run. This is great for debugging a complex problem as the simulation can be restarted multiple times. To get a different behaviour, the simulation can be restarted with a different seed.
+
+=== Replay
+Due to the reproducible, deterministic nature of CherrySim, it is possible to replay a log file of a previous CherrySim execution if that run was configured with `simConfig.logReplayCommands = true`. If you want to do this, all you have to do is set `simConfig.replayPath` to a path of a log file. In practice you probably want to use this feature in CherrySimRunner. A designated line was created to help you with this, look for the String "@ReplayFeature@" inside `CherrySimRunner.cpp` for more information. If you copy the log file to the root of the repository with the name `cherry-sim.log`, you can simply uncomment the line.
+
+CherrySim will load the previous simulator configuration from your log file. If it was a recording of e.g. a live session with a gateway, you might want to set `playDelay` to 0 and `realTime` to false. This will make the simulation run as fast as possible. You can find the configuration at the beginning of the log file.
+
+Make sure to modify the configuration in the replay log file and not in the code as the default configuration in the code will be overwritten with the configuration of the replay log file to reproduce the exact same conditions that were used when the replay log file was generated.
+
+=== Fast Lane
+We have included a fastLane option that allows you to speed up the simulation until a certain time is reached. This is very useful when debugging a replay log and when there is an error that only occurs after an extended time of simulating. It is available as part of the `SimConfiguration` and you can set it to a value in milliseconds. The simulator will completely disable the terminal output and will only render a new Native Renderer frame from time to time. Then, after the given time was reached, the terminal will be enabled and the Native Renderer will resume drawing all frames.
+
+=== Globally Available Variables
+There are a number of global variables that are helpful for inspecting the state of the simulation:
+
+*simGlobalStatePtr* always references the GlobalState of the current node that is simulated. Only one node is simulated at a time and the GlobalState object contains the full state of a FruityMesh node.
+
+*cherrySimInstance* points to the simulator and can be used to access all other information
+
+*cherrySimInstance->currentNode* can be used to see the complete state of the current node including SoftDevice and FruityMesh state.
+
+*cherrySimInstance->currentNode->currentEvent* points to the event that is being processed. This can contain additional information under _additionalInfo_ such as the globalPacketId for all write events.
+
+*cherrySimInstance->nodes* provides access to all nodes in the simulation.
+
+*simFicrPtr*, *simUicrPtr*, *simGpioPtr*, *simFlashPtr* point to the simulated hardware peripherals of the currently simulated node.
+
+=== Debugging With Conditional Breakpoints
+If some event, connection or packet is causing trouble it might be useful to break the simulator once the event/connection/packet is created. To do this, a globally unique Id is assigned to each of these. Using a conditional breakpoints for debugging this can be very useful. Because of the PSRNG, the same situation can be reproduced as often as desired and logs and more can added or modified (as long as the meshing behaviour is not changed). Conditional Breakpoints can be used for:
+
+* *globalEventIdCounter*: A different ID is given to each event so that breakpoints can be set for specific events.
+* *globalConnHandleCounter*: Each connection is given a globally unique id so they can be tracked easily (After a long simulation, these will wrap and a warning will be printed)
+* *globalPacketIdCounter*: Each packet is assigned a global ID so that the creation of the packet can be debugged. This is usefuly as packet creation and processing of the packet happen asynchronously and are not directly linked. Check the _additionalInfo_ of the _currentEvent_ during debugging and break in the _sd_ble_gattc_write_ when this is assigned.
+
+To break in the debugger before some error happens, use:
+
+[source,c++]
+----
+static int counter = 0;
+counter++;
+----
+Then check the value of the counter in the debugger, set a conditional breakpoint some lines before the error happened and compare the counter value against the count from the previous run.
+
+[#SocketTerm]
+== SocketTerm
+CherrySim by default supports stdio for input and output and you are able to chose a terminal and start entering commands right within the console. This is however quite limited and you are not able to easily connect to multiple terminals at the same time. Therefore, we have implemented `SocketTerm` which allows you to connect to the simulator by using a TCP socket e.g. by using a telnet client or other software such as a gateway.
+
+image:cherrysim_socketterm.png[CherrySim SocketTerm]
+
+By default, CherrySim listens on port `5556`. To open a connection, e.g. use `telnet localhost 5556`. This is very flexible as it also allows you to connect a custom gateway to the simulation or multiple gateways at the same time as CherrySim is also able to simulate multiple networks at the same time. It is a good idea to start CherrySim with the commandline argument `disableStdio`, e.g. `cherrysim_runner.exe disableStdio` as this will considerably improve the performance.
+
+After the session was opened, you will be informed with a message of type `sim_socket_connect` that you are now connected. The first thing you have to do is to select a terminal by using `sim term [terminalId]` to connect to the terminal of a node. The terminal id of a node is equal to `nodeIndex + 1` (the _default_ node id), see the xref:#FeaturesetSimulation[documentation on featureset simulation] on how the node index is assigned. If you do _not_ change the node id (e.g. via enrollment) after the simulator starts, then the terminal id and node id will be the same. Additionally, the terminal id of a node will stay the same during the whole simulation and is _not_ affected by enrollments.
+
+A response of type `sim_term_changed` will inform you if the simulator was able to switch to the terminal or if it e.g. does not exist. Depending on the featureset, the node will have its terminal configured to JSON or PROMPT mode. Be aware that you will not get any echo-back of what you are typing as the SocketTerm is intended for process to process communication. Your telnet client (e.g. Putty) will however have an option to toggle local echo if necessary.
+
+You are now connected to the terminal of the specified node and you are free to open more clients to interact with other nodes at the same time. Only a single client can be connected to the terminal of a single node.
+
+
+[#CherrySimTester]
+== CherrySimTester
+CherrySimTester is used to write automated tests against the mesh. Typically a test will first set up a mesh network with a few nodes, possibly with different featuresets. Afterwards, it might wait until they are clustered and then send some terminal commands. Next, the simulation might wait for some message to be received so that the test is considered passing. Have a look at the available tests under `<fruitymesh>/cherrysim/test` to get a better understanding.
+
+Command line arguments of the `cherrySim_tester` executable:
+
+* `SeedStart=...`: lets the tester start _each test_ with this particular PRNG seed set in the `CherrySim` instance
+* `SeedIncrement=...`: the seed will be incremented by this number between each test run
+* `numRuns=...`: all tests will be repeatedly run this number of times (this is used together with `SeedIncrmenet`)
+* `verboseTestsByDefault`: if this flag is given, the `verbose` member of the `CherrySimTesterConfig` will be `true` by default - useful to re-run tests as verbose without needing to recompile
+
+Additionally the usual `gtest` flags can be used:
+
+* `--gtest_filter=...` applies a filter on the tests being run (see https://google.github.io/googletest/advanced.html#running-a-subset-of-the-tests)
+
+=== Terminal ID
+
+Each node is assigned a `terminalId`, defined as the `nodeIndex + 1`.
+The `terminalId` should be used when matching nodes in test code, e.g. to send commands to a node or waiting for particular terminal output.
+
+Because the `nodeId` might be changed due to enrollment, it is particularly important not to search for nodes using the `nodeId` _if it was not explicitly set in the test code_.
+
+
+== SimulateUntilRegexMessageReceived
+
+Prior to the implementation of SimulateUntilRegexMessageReceived we had to simulate for exact message hits. However, this was not always practical. For example, if the battery measurement is queried it is not helpful to only accept a specific battery measurement, instead it is important to write a google unit test that makes sure that any battery measurement is returned. This was made possible with the addition of RegexMessages.
+
+Two very nice online resources to test if a given regex matches with a message are the following: https://regex101.com/ and https://regexr.com/
+
+Noteworthy: Both "{" and "}" (occurring in JSONs) have to be escaped because they are special regex chars. The regex escape character itself has to be escaped as it is placed in a C-String-Literal, thus a "{" becomes "\\{".
+
+== CheckExceptionWasThrown
+
+In some cases, we want to write a test where we want to check if a certain exception has occurred or not even though we have disabled it, e.g for writing a test to check if our code throws an IllegalArgumentException, if we provide a malformed string buffer to our Logger::ParseEncodedStringToBuffer(..) method. Example implementation could be
+
+[source,C++]
+----
+{
+   Exceptions::ExceptionDisabler<IllegalArgumentException> iae;
+   base64 = "Malformed";
+   Logger::ParseEncodedStringToBuffer(base64.c_str(), buffer, sizeof(buffer));
+   ASSERT_TRUE(tester.sim->CheckExceptionWasThrown(typeid(IllegalArgumentException)));
+}
+----
+
+In our example above, we first disabled the IllegalArgumentException. The simulator will then start to accumulated the exceptions for one simulation step and we can later check if an
+IllegalArgumentException was thrown in that simulation step by calling CheckExceptionWasThrown(..).
+
+This should be used instead of `ASSERT_THROW` as a simulator exception will leave the firmware code and simulation step exceptionally, thereby leaving the simulation in an undefined state. If we disable the exception, we can however safely continue the simulation.
+
+WARNING: An exceptions is only accumulated once it is disabled and is kept only for a single simulation step. You will not be able to simulate for a given time and then check for all exceptions that have happened in the meantime.
+
+
+== StepCallbacks
+
+Some of the simulate functions also have a "stepCallback" parameter. This is a `std::function` which, if provided, is called before each simulation step. This is for example used to constantly fill the queues in tests.
+
+== Jittering
+Multiple nodes in the mesh only guarantee that the passed time is the same for all of them on average (plus a small bias). To make sure that we are able to handle such behaviour, "jittering" was implemented into the simulator. Jittering can be enabled by setting `simulateJittering` to true inside the configuration. Once it is enabled, there is on average a 50% chance that a simulated node is not simulated in one simulation step. In addition to this, nodes that have been simulated more rarely than others have a higher probability to be executed, and vice versa. This generates more randomness and closeness to the real world behaviour.
+
+== Mersenne Twister
+A custom Random Number Generator (RNG) is used in the simulator. Originally the implementation of it comes from the "BrotBoxEngine", see: https://github.com/Brotcrunsher/BrotBoxEngine/blob/master/BrotBoxEngine/BBE/MersenneTwister.h .
+
+The use of a RNG is very important in the simulator. It must have two properties:
+
+. It must generate numbers that feel random, so that a lot of different cases can be tested.
+. It must reproduce the exact same values on all platforms, if the same seed is used.
+
+The second point is unfortunately not guaranteed by the std::mt19937 and the std::distributions implementation. Although the same compiler always generates the same output, the same is not true for different compilers. In practice we noticed that MSVC generated different results compared to GCC when using the STL implementation.
+
+== Stack Overflow Simulation
+The simulator implements a simple stack overflow detection mechanism, found in the "StackWatcher". One can set the simulated "stack base" (which is the simulated start of the stack of a device) by creating the RAII type "StackBaseSetter". Most functions in the SystemTest.h then check if the current stack, minus the latest value in the StackBaseSetter is larger than some threshold. If it is, an exception is thrown.
+
+NOTE: This is just a very rough estimation that is able to detect large stack traces, as long as any SystemTest.h function is called. It does not give any guarantees about real life, it just "sometimes" finds stack overflows that also would happen on real devices.
+
+== Flash to file
+The simulator is able to store the flash of all nodes into a file, making it easier to reuse a simulated mesh as all nodes are enrolled in the proper network and all other configurations are kept. To use this feature, set `storeFlashToFile` to any path you wish. If this attribute is not the empty string, the simulator stores the flash in this file. If the given file exists, the simulator loads the configuration on startup.
+
+NOTE: This feature only stores the flash, not the RAM of the nodes. This means that if the simulator is shut down and booted up again with this file, all nodes only remember the configuration, not how they meshed up. Such a case is comparable with a complete power shortage of a mesh in the real world.
+
+[#FeaturesetSimulation]
+== Featureset simulation
+The simulator supports simulating an arbitrary amount of different featuresets. To add a new featureset to the list of used featuresets, add it to the list inside `CherrySim::PrepareSimulatedFeatureSets()`.
+
+NOTE: Order matters in this list! The amount of nodes for each featureset during one simulation is filled up from the top to the bottom, meaning if 1 sink, 2 mesh, and one asset node is simulated, the sink gets index 0, mesh nodes 1 and 2, and the asset 3. This is because the sink featureset comes first in the `CherrySim::PrepareSimulatedFeatureSets()`, next is prod_mesh_nrf52, and at the very end the asset featuresets.
+
+One simulated featureset is a struct object that contains a set of function pointers. See `FeaturesetPointers`. All these function pointers should not be called directly, but via the macros that are used on real hardware instead.
+
+== JSON validity check in simulator
+The simulator makes sure that a printed JSON has a valid JSON format by parsing it once it is fully logged out. To see how this is done, check out `Logger::log_f`.
+
+== JSON config
+The simulator is able to store and load its configuration in JSON format. To see how this is done, have a look at `void to_json(nlohmann::json& j, const SimConfiguration& config);` and `void from_json(const nlohmann::json& j, SimConfiguration& config);`. These two functions are then used to load and store the configuration. In practice this is for example used in the CherrySimRunner to load the `MeshGwCommunicationConfig.json` which in turn is used to properly configure the simulator for our SystemTests. Have a look for `MeshGWCommunicationConfig.json` inside the `CherrySimRunner.cpp` to see how this is done.
+
+CAUTION: It is very important to keep both the `to_json` and `from_json` functions up to date when something in the configuration changes. This has to be done manually as C++ does not support reflection.
+
+== Simulator Commands
+The simulator supports the use of special simulator commands. These commands all start with "sim ". They don't necessarily have a node as its execution target but are rather commands that have the simulator itself as target. Additionally, sim commands are treated differently as other messages as in they don't simulate the same restrictions for the length of the command. In fact a sim command can be arbitrarily long. Have a look at the `Terminal.cpp` and search for "sim " (with the space at the end and the quotation marks).
+
+== Working Directory
+If CherrySim has trouble loading some files (mostly with the integrated webserver) you can try to specify the working directory in an environment variable `CHERRYSIM_WORKDIR` without a trailing `/` like this: `/path/to/cherrysim`.
+
+
+== Implementation Detail
+
+[#ImplementationRSSI]
+=== RSSI Computation and Reception Probability
+
+The Received Signal Strength Indicator of a simulated signal between nodes is computed from paramters of both nodes.
+Most importantly it considers the distance between the nodes and uses the Path-Loss-Model (see `cherrysim/PathLossModel.h`).
+Signal noise is modeled using zero-mean Gaussian noise.
+
+Computing the probability of receiving an advertisement (important for the simulated BLE connection establishment) must also take into account how much time is spent by the central device on listenting for an advertisement of the peripheral device.
+These parameters are found in form of the relation of the `scan window` and `scan interval`, where the `window` is the (absolute) duration used for listening of the full `interval` in which the BLE channel is kept constant.
+
+In order to balance the effect of the `simulateAdvertisingIndexStep` setting in the xref:JsonFilesIncludedInCherrySim.adoc#meshGwCommunication[configuration file], which causes advertising simulation only being executed every other simulation step, the probability is multiplied by the simulation step.
+Without this multiplication, the reception probability would be invalid when the advertising steps are skipped.
+
+The `floorBiasInMeters`, together with the `ceilingHeightInMeters` and `ceilingAttenuationDb` settings can also potentially affect the RSSI computation, as they add a dampening effect (worsening the reception) based on the number of ceilings the simulated signal passes through.
+
+
+== Legal Disclaimer
+Nordic allowed us in their forums to use their headers in our simulator as long as it
+is used to simulate a Nordic Integrated Circuit.
+See: https://devzone.nordicsemi.com/f/nordic-q-a/57615/legal-issue-using-nordic-sdk-code
