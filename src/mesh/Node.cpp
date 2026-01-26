@@ -840,24 +840,108 @@ void Node::MeshMessageReceivedHandler(BaseConnection* connection, BaseConnection
             }
 
             else if (packet->actionType == (u8)NodeModuleTriggerActionMessages::START_GENERATE_LOAD) {
-                GenerateLoadTriggerMessage const * message = (GenerateLoadTriggerMessage const *)packet->data;
-                generateLoadTarget = message->target;
-                generateLoadPayloadSize = message->size;
-                //generateLoadMessagesLeft = message->amount;//packet->requestHandle new
-                generateLoadMessagesLeft = message->amount*packet->requestHandle;//packet->requestHandle new
-                generateLoadTimeBetweenMessagesDs = message->timeBetweenMessagesDs;
-                //generateLoadRequestHandle = packet->requestHandle;
-                generateLoadRequestHandle = 0; //new
-                //u32 packetReceivedTime = GS->timeManager.GetUtcTime();  // new nonimportant
-                GS->CollsndCount=0; //new init CollsndCount
-                GS->MultipleCount=0;
-                GS->MultipleUnit=packet->requestHandle; //new
-                logt("NODE", "Generating load. Target: %u size: %u amount: %u interval: %u requestHandle: %u",
-                    message->target,
-                    message->size,
-                    message->amount*packet->requestHandle, //packet->requestHandle new
-                    message->timeBetweenMessagesDs,
-                    packet->requestHandle);
+                // 检查消息大小来判断是否包含 priority 字段
+                const u8 payloadLength = sendData->dataLength.GetRaw() - SIZEOF_CONN_PACKET_MODULE;
+
+                trace("DEBUG: Received START_GENERATE_LOAD, payloadLength=%u, sizeof(GenerateLoadMixedMessage)=%u" EOL, 
+                    payloadLength, sizeof(GenerateLoadMixedMessage));
+
+                // 檢查是否為混合交錯模式（使用特殊 requestHandle=0xFD）
+                if (packet->requestHandle == 0xFD && payloadLength >= sizeof(GenerateLoadMixedMessage)) {
+                    // 混合交錯模式
+                    GenerateLoadMixedMessage const * message = (GenerateLoadMixedMessage const *)packet->data;
+                    generateLoadTarget = message->target;
+                    generateLoadPayloadSize = message->size;
+                    generateLoadTimeBetweenMessagesDs = message->timeBetweenMessagesDs;
+
+                    // 解碼 interleavingRatio：高 4 位是 requestHandle，低 4 位是真正的 ratio
+                    u8 decodedMultiplier = (message->interleavingRatio >> 4) & 0x0F;
+                    u8 decodedRatio = message->interleavingRatio & 0x0F;
+                    if (decodedMultiplier == 0) decodedMultiplier = 1; // 防止除以 0
+                    if (decodedRatio == 0) decodedRatio = 3; // 預設 3:1
+
+                    // 設定混合模式參數
+                    generateLoadMixedMode = true;
+                    generateLoadWithPriorityFlag = true;
+                    generateLoadHighTarget = message->highAmount * decodedMultiplier;  // 乘以 multiplier
+                    generateLoadLowTarget = message->lowAmount * decodedMultiplier;    // 乘以 multiplier
+                    generateLoadHighSent = 0;
+                    generateLoadLowSent = 0;
+                    generateLoadInterleavingRatio = decodedRatio;
+                    generateLoadMixedCounter = 0;
+                    generateLoadMessagesLeft = (message->highAmount + message->lowAmount) * decodedMultiplier;
+                    generateLoadRequestHandle = 0;
+
+                    GS->CollsndCount = 0;
+                    GS->MultipleCount = 0;
+                    GS->MultipleUnit = decodedMultiplier;
+
+                    trace("DEBUG: gen_load_mixed - HIGH=%u, LOW=%u, ratio=%u:1, multiplier=%u, total=%u" EOL, 
+                        message->highAmount, message->lowAmount, decodedRatio, decodedMultiplier, generateLoadMessagesLeft);
+
+                    logt("NODE", "Generating MIXED interleaved load. Target: %u size: %u HIGH: %u LOW: %u ratio: %u:1 multiplier: %u interval: %u",
+                        message->target,
+                        message->size,
+                        message->highAmount,
+                        message->lowAmount,
+                        decodedRatio,
+                        decodedMultiplier,
+                        message->timeBetweenMessagesDs);
+                }
+                else if (payloadLength >= sizeof(GenerateLoadWithPriorityMessage)) {
+                    // 包含 priority 的新格式
+                    trace("DEBUG: Using NEW format (with priority)" EOL);
+                    GenerateLoadWithPriorityMessage const * message = (GenerateLoadWithPriorityMessage const *)packet->data;
+                    generateLoadTarget = message->target;
+                    generateLoadPayloadSize = message->size;
+                    generateLoadMessagesLeft = message->amount * packet->requestHandle;
+                    generateLoadTimeBetweenMessagesDs = message->timeBetweenMessagesDs;
+                    generateLoadPriority = message->priority; // 保存 priority
+                    generateLoadWithPriorityFlag = true; // 设置标志
+                    generateLoadMixedMode = false; // 清除混合模式
+                    generateLoadRequestHandle = 0;
+
+                    GS->CollsndCount = 0;
+                    GS->MultipleCount = 0;
+                    GS->MultipleUnit = packet->requestHandle;
+
+                    trace("DEBUG: gen_load_prio - MultipleUnit=%u, amount=%u, requestHandle=%u, priority=%u" EOL, 
+                        GS->MultipleUnit, message->amount, packet->requestHandle, message->priority);
+
+                    logt("NODE", "Generating load with priority. Target: %u size: %u amount: %u interval: %u priority: %u requestHandle: %u",
+                        message->target,
+                        message->size,
+                        message->amount * packet->requestHandle,
+                        message->timeBetweenMessagesDs,
+                        message->priority,
+                        packet->requestHandle);
+                } else {
+                    // 原始格式，没有 priority
+                    trace("DEBUG: Using OLD format (without priority)" EOL);
+                    GenerateLoadTriggerMessage const * message = (GenerateLoadTriggerMessage const *)packet->data;
+                    generateLoadTarget = message->target;
+                    generateLoadPayloadSize = message->size;
+                    generateLoadMessagesLeft = message->amount * packet->requestHandle;
+                    generateLoadTimeBetweenMessagesDs = message->timeBetweenMessagesDs;
+                    generateLoadPriority = 3; // Default to LOW priority
+                    generateLoadWithPriorityFlag = false; // 清除标志
+                    generateLoadMixedMode = false; // 清除混合模式
+                    generateLoadRequestHandle = 0;
+
+                    GS->CollsndCount = 0;
+                    GS->MultipleCount = 0;
+                    GS->MultipleUnit = packet->requestHandle;
+
+                    trace("DEBUG: multi_generate_load - MultipleUnit=%u, amount=%u, requestHandle=%u" EOL, 
+                        GS->MultipleUnit, message->amount, packet->requestHandle);
+
+                    logt("NODE", "Generating load. Target: %u size: %u amount: %u interval: %u requestHandle: %u",
+                        message->target,
+                        message->size,
+                        message->amount * packet->requestHandle,
+                        message->timeBetweenMessagesDs,
+                        packet->requestHandle);
+                }
 
                 SendModuleActionMessage(
                     MessageType::MODULE_ACTION_RESPONSE,
@@ -874,7 +958,19 @@ void Node::MeshMessageReceivedHandler(BaseConnection* connection, BaseConnection
                 u8 const * payload = packet->data;
                 bool payloadCorrect = true;
                 const u8 payloadLength = sendData->dataLength.GetRaw() - SIZEOF_CONN_PACKET_MODULE;
-                for (u32 i = 0; i < payloadLength; i++)
+                // 新增：检测 priority 标记
+                u8 receivedPriority = 3; // 默认 LOW
+                bool hasPriorityMarker = false;
+                u32 startIdx = 0;
+
+                if (payloadLength > 0 && (payload[0] & 0xF0) == generateLoadPriorityMarker) {
+                    hasPriorityMarker = true;
+                    receivedPriority = payload[0] & 0x0F;
+                    startIdx = 1;
+                }
+
+                // 验证 payload
+                for (u32 i = startIdx; i < payloadLength; i++)
                 {
                     if (payload[i] != generateLoadMagicNumber)
                     {
@@ -891,6 +987,18 @@ void Node::MeshMessageReceivedHandler(BaseConnection* connection, BaseConnection
 
                 avgDelay[packetHeader->sender - 1] += packetDelay;
                 rcvCount[packetHeader->sender - 1] += 1;
+                // GS->rcvCount += 1; // 累加全局接收计数
+
+                // 新增：分别统计 high/low priority
+                if (hasPriorityMarker) {
+                    if (receivedPriority <= 1) { // HIGH or VITAL
+                        avgDelayHighPrio[packetHeader->sender - 1] += packetDelay;
+                        rcvCountHighPrio[packetHeader->sender - 1] += 1;
+                    } else { // MEDIUM or LOW
+                        avgDelayLowPrio[packetHeader->sender - 1] += packetDelay;
+                        rcvCountLowPrio[packetHeader->sender - 1] += 1;
+                    }
+                }
 
 
                 for (u32 i = 0; i < payloadLength; i++)
@@ -935,6 +1043,54 @@ void Node::MeshMessageReceivedHandler(BaseConnection* connection, BaseConnection
                         GS->MultipleCount=0; 
                     
             }
+
+            // 新增：收集混合模式統計
+            else if(packet->actionType == (u8)NodeModuleTriggerActionMessages::COLLECT_MIXED_DATA)
+            {
+                // 發送 HIGH priority 計數
+                SendModuleActionMessage(
+                    MessageType::MODULE_TRIGGER_ACTION,
+                    packetHeader->sender,
+                    (u8)NodeModuleTriggerActionMessages::TRANSMIT_MIXED_HIGH_COUNT,
+                    0,
+                    (u8*)&generateLoadHighSent,
+                    sizeof(generateLoadHighSent),
+                    false
+                );
+                // 發送 LOW priority 計數
+                SendModuleActionMessage(
+                    MessageType::MODULE_TRIGGER_ACTION,
+                    packetHeader->sender,
+                    (u8)NodeModuleTriggerActionMessages::TRANSMIT_MIXED_LOW_COUNT,
+                    0,
+                    (u8*)&generateLoadLowSent,
+                    sizeof(generateLoadLowSent),
+                    false
+                );
+            }
+            // 接收 HIGH priority 計數
+            else if(packet->actionType == (u8)NodeModuleTriggerActionMessages::TRANSMIT_MIXED_HIGH_COUNT)
+            {
+                u32 count = 0;
+                if (sendData->dataLength.GetRaw() >= SIZEOF_CONN_PACKET_MODULE + sizeof(u32)) {
+                    CheckedMemcpy(&count, packet->data, sizeof(u32));
+                }
+                if (packetHeader->sender > 0 && packetHeader->sender <= 100) {
+                    sndCountHighPrio[packetHeader->sender - 1] = count;
+                }
+            }
+            // 接收 LOW priority 計數
+            else if(packet->actionType == (u8)NodeModuleTriggerActionMessages::TRANSMIT_MIXED_LOW_COUNT)
+            {
+                u32 count = 0;
+                if (sendData->dataLength.GetRaw() >= SIZEOF_CONN_PACKET_MODULE + sizeof(u32)) {
+                    CheckedMemcpy(&count, packet->data, sizeof(u32));
+                }
+                if (packetHeader->sender > 0 && packetHeader->sender <= 100) {
+                    sndCountLowPrio[packetHeader->sender - 1] = count;
+                }
+            }
+
             //new collect data
             else if(packet->actionType == (u8)NodeModuleTriggerActionMessages::TRANSMIT_DATA_CollsndCount)
             {
@@ -956,7 +1112,7 @@ void Node::MeshMessageReceivedHandler(BaseConnection* connection, BaseConnection
             //new find_degree
             else if (packet->actionType == (u8)NodeModuleTriggerActionMessages::FIND_DEGREE)
             {
-                TOTAL_NODE_NUM = 5;
+                TOTAL_NODE_NUM = 3;
 
                     /*初始化deg記憶體空間==-1*/
                 if (init == -1) {
@@ -1321,6 +1477,95 @@ void Node::MeshMessageReceivedHandler(BaseConnection* connection, BaseConnection
                     false
                 );
             }
+
+            //新增加設置scan interval
+            else if (packet->actionType == (u8)NodeModuleTriggerActionMessages::SET_SCAN_INTERVAL)
+            {
+                if (sendData->dataLength >= (SIZEOF_CONN_PACKET_MODULE + sizeof(UpdateConnIntervalMessage)))
+                {
+                    UpdateConnIntervalMessage const * message = (UpdateConnIntervalMessage const *)packet->data;
+                    u16 newIntervalMs = message->newIntervalMs;
+                    logt("NODE", "Setting scan interval to %u ms.", newIntervalMs);
+
+                    u16 scanIntervalUnits = MSEC_TO_UNITS(newIntervalMs, CONFIG_UNIT_0_625_MS);
+                    RamConfig->meshScanIntervalHigh = scanIntervalUnits;
+                    RamConfig->meshScanIntervalLow = scanIntervalUnits;
+
+                    ChangeState(currentDiscoveryState); // Apply new scan settings
+
+                    SendModuleActionMessage(
+                        MessageType::MODULE_ACTION_RESPONSE,
+                        packetHeader->sender,
+                        (u8)NodeModuleActionResponseMessages::SET_SCAN_INTERVAL_RESULT,
+                        packet->requestHandle, nullptr, 0, false);
+                }
+            }
+
+            //新加入調整connection interval
+            else if (packet->actionType == (u8)NodeModuleTriggerActionMessages::SET_CONN_INTERVAL)
+            {
+                // Support both old and new message format for compatibility
+                NodeId targetNodeId = 0;
+                u16 newIntervalMs = 0;
+
+                // Define the new message structure locally for this handler
+                struct UpdateConnIntervalMessageWithTarget {
+                    u16 newIntervalMs;
+                    NodeId targetNodeId;
+                };
+
+                if (sendData->dataLength >= (SIZEOF_CONN_PACKET_MODULE + sizeof(UpdateConnIntervalMessageWithTarget))) {
+                    // New format: { newIntervalMs, targetNodeId }
+                    UpdateConnIntervalMessageWithTarget const * message = (UpdateConnIntervalMessageWithTarget const *)packet->data;
+                    newIntervalMs = message->newIntervalMs;
+                    targetNodeId = message->targetNodeId;
+                } else if (sendData->dataLength >= (SIZEOF_CONN_PACKET_MODULE + sizeof(u16))) {
+                    // Old format: { newIntervalMs }
+                    UpdateConnIntervalMessage const * message = (UpdateConnIntervalMessage const *)packet->data;
+                    newIntervalMs = message->newIntervalMs;
+                } else {
+                    // Not enough data
+                    return;
+                }
+
+                if (targetNodeId != 0) {
+                    // A specific peer is targeted
+                    logt("NODE", "Setting connection interval for peer %u to %u ms.", targetNodeId, newIntervalMs);
+
+                    bool found = false;
+                    MeshConnections conns = GS->cm.GetMeshConnections(ConnectionDirection::INVALID);
+                    for (u32 i = 0; i < conns.count; i++) {
+                        if (conns.handles[i].GetPartnerId() == targetNodeId) {
+                            // Directly call the UpdateConnectionInterval method on the Node class
+                            UpdateConnectionInterval(conns.handles[i].GetConnection()->connectionHandle, newIntervalMs);
+                            found = true;
+                            break;
+                        }
+                    }
+
+                    if (!found) {
+                        logt("NODE", "Target peer %u not found or not a mesh connection.", targetNodeId);
+                    }
+                } else {
+                    // No specific peer, update all connections (original behavior)
+                    logt("NODE", "Setting connection interval to %u ms and scheduling updates for all connections.", newIntervalMs);
+
+                    u16 connIntervalUnits = MSEC_TO_UNITS(newIntervalMs, CONFIG_UNIT_1_25_MS);
+                    RamConfig->meshMinConnectionInterval = connIntervalUnits;
+                    RamConfig->meshMaxConnectionInterval = connIntervalUnits;
+
+                    // Kick off the state machine to update existing connections
+                    connUpdateIntervalMs = newIntervalMs;
+                    connUpdateIndex = 0;
+                    nextConnUpdateAllowedTimeDs = GS->appTimerDs;
+                }
+
+                SendModuleActionMessage(
+                    MessageType::MODULE_ACTION_RESPONSE,
+                    packetHeader->sender,
+                    (u8)NodeModuleActionResponseMessages::SET_CONN_INTERVAL_RESULT,
+                    packet->requestHandle, nullptr, 0, false);
+            }
         }
     }
 
@@ -1422,6 +1667,16 @@ void Node::MeshMessageReceivedHandler(BaseConnection* connection, BaseConnection
                     }
                 }
                 logjson("NODE", "]}" SEP);
+            }
+            //新加入設置scan interval
+            else if (packet->actionType == (u8)NodeModuleActionResponseMessages::SET_SCAN_INTERVAL_RESULT)
+            {
+                logjson("NODE", "{\"type\":\"set_scan_interval_result\",\"nodeId\":%d,\"module\":%u,\"requestHandle\":%u}" SEP, packetHeader->sender, (u32)ModuleId::NODE, packet->requestHandle);
+            }
+            //新加入調整connection interval
+            else if (packet->actionType == (u8)NodeModuleActionResponseMessages::SET_CONN_INTERVAL_RESULT)
+            {
+                logjson("NODE", "{\"type\":\"set_conn_interval_result\",\"nodeId\":%d,\"module\":%u,\"requestHandle\":%u}" SEP, packetHeader->sender, (u32)ModuleId::NODE, packet->requestHandle);
             }
         }
     }
@@ -1922,6 +2177,26 @@ DeliveryPriority Node::GetPriorityOfMessage(const u8* data, MessageLength size)
         {
             return DeliveryPriority::VITAL;
         }
+         // 檢查是否為 GENERATE_LOAD_CHUNK 消息，如果是則使用設定的 priority
+        if (header->messageType == MessageType::MODULE_TRIGGER_ACTION && size >= SIZEOF_CONN_PACKET_MODULE)
+        {
+            const ConnPacketModule* packet = (const ConnPacketModule*)data;
+            if (packet->moduleId == ModuleId::NODE 
+                && packet->actionType == (u8)NodeModuleTriggerActionMessages::GENERATE_LOAD_CHUNK)
+            {
+                // 檢查 payload 是否包含優先級標記
+                const MessageLength payloadLength = size - SIZEOF_CONN_PACKET_MODULE;
+                if (payloadLength > 0 && (packet->data[0] & 0xF0) == generateLoadPriorityMarker) {
+                    // 從 payload 的第一個字節提取優先級（低 4 位）
+                    u8 payloadPriority = packet->data[0] & 0x0F;
+                    return (DeliveryPriority)payloadPriority;
+                }
+
+                // 如果沒有優先級標記，使用 generateLoadPriority（向後兼容）
+                // 0: VITAL, 1: HIGH, 2: MEDIUM, 3: LOW
+                return (DeliveryPriority)generateLoadPriority;
+            }
+        }
     }
     return DeliveryPriority::INVALID;
 }
@@ -1939,6 +2214,11 @@ void Node::UpdateJoinMePacket()
 {
     if (configuration.networkId == 0) return;
     if (meshAdvJobHandle == nullptr) return;
+    // 额外检查：防止指针被损坏为无效值
+    if ((uintptr_t)meshAdvJobHandle == (uintptr_t)0xFFFFFFFF) {
+        logt("ERROR", "meshAdvJobHandle is corrupted: 0x%X", (uintptr_t)meshAdvJobHandle);
+        return;
+    }
     if (GET_DEVICE_TYPE() == DeviceType::ASSET) return;
 
     SetTerminalTitle();
@@ -2728,8 +3008,54 @@ void Node::DisableStateMachine(bool disable)
     stateMachineDisabled = disable;
 }
 
+//新加入功能調整connection interval
 void Node::TimerEventHandler(u16 passedTimeDs)
 {
+     // State machine for staggered connection interval updates
+    if (connUpdateIndex >= 0 && GS->appTimerDs >= nextConnUpdateAllowedTimeDs)
+    {
+        MeshConnections conns = GS->cm.GetMeshConnections(ConnectionDirection::INVALID);
+        if (connUpdateIndex >= conns.count)
+        {
+            // Finished all connections
+            logt("NODE", "Finished applying connection interval updates.");
+            connUpdateIndex = -1;
+            connUpdateIntervalMs = 0;
+        }
+        else
+        {
+            // Update the next connection
+            MeshConnectionHandle connToUpdate = conns.handles[connUpdateIndex];
+            if (connToUpdate && connToUpdate.IsHandshakeDone())
+            {
+                ErrorType err = UpdateConnectionInterval(connToUpdate.GetConnection()->connectionHandle, connUpdateIntervalMs);
+                if (err == ErrorType::SUCCESS)
+                {
+                    // Success, move to the next one after a short delay
+                    connUpdateIndex++;
+                    nextConnUpdateAllowedTimeDs = GS->appTimerDs + 2; // 2 deciseconds = 200ms delay
+                }
+                else if (err == (ErrorType)17 /* NRF_ERROR_BUSY */)
+                {
+                    // Busy, retry the same index after a delay
+                    nextConnUpdateAllowedTimeDs = GS->appTimerDs + SEC_TO_DS(1); // 1s delay
+                }
+                else
+                {
+                    // Other error, log it and move to the next connection to avoid getting stuck
+                    logt("ERROR", "Skipping conn interval update for index %d due to error %u", connUpdateIndex, (u32)err);
+                    connUpdateIndex++;
+                    nextConnUpdateAllowedTimeDs = GS->appTimerDs + 2; // 2 deciseconds = 200ms delay
+                }
+            }
+            else
+            {
+                // This connection is not valid or ready, skip it and try next one immediately
+                connUpdateIndex++;
+                nextConnUpdateAllowedTimeDs = GS->appTimerDs;
+            }
+        }
+    }
 
     //delayTime
     if(delayTime > 0)
@@ -3024,6 +3350,65 @@ void Node::TimerEventHandler(u16 passedTimeDs)
             DYNAMIC_ARRAY(payloadBuffer, generateLoadPayloadSize);
             CheckedMemset(payloadBuffer, generateLoadMagicNumber, generateLoadPayloadSize);
 
+            // 新增：標記 priority（支援混合交錯模式）
+            if (generateLoadWithPriorityFlag && generateLoadPayloadSize > 0) {
+                u8 currentPriority = generateLoadPriority;
+
+                // 混合交錯模式：智能演算法決定當前封包的優先級
+                if (generateLoadMixedMode) {
+                    u32 remainingHigh = generateLoadHighTarget - generateLoadHighSent;
+                    u32 remainingLow = generateLoadLowTarget - generateLoadLowSent;
+
+                    bool sendHigh = false;
+
+                    if (remainingHigh > 0 && remainingLow > 0) {
+                        // 智能交錯演算法：Token Bucket + Weighted Round-Robin
+                        // 策略 1：使用 interleavingRatio 控制交錯比例
+                        // 例如 ratio=3 表示每 4 個封包中 3 個 HIGH, 1 個 LOW (3:1)
+                        u32 cycleLength = generateLoadInterleavingRatio + 1;
+                        u32 position = generateLoadMixedCounter % cycleLength;
+
+                        if (position < generateLoadInterleavingRatio) {
+                            // 在 HIGH 的位置
+                            sendHigh = true;
+                        } else {
+                            // 在 LOW 的位置
+                            sendHigh = false;
+                        }
+
+                        // 策略 2：動態調整 - 如果某種封包快用完，優先發送剩餘多的
+                        // 避免最後只剩一種封包而無法交錯
+                        u32 totalRemaining = remainingHigh + remainingLow;
+                        if (totalRemaining > 0) {
+                            // 如果 HIGH 剩餘比例低於目標比例，強制發送 LOW
+                            float highRatio = (float)remainingHigh / totalRemaining;
+                            float targetHighRatio = (float)generateLoadInterleavingRatio / cycleLength;
+
+                            if (highRatio < targetHighRatio * 0.5f && remainingLow > cycleLength) {
+                                sendHigh = false; // 切換到 LOW 避免 HIGH 太早用完
+                            } else if (highRatio > targetHighRatio * 1.5f && remainingHigh > cycleLength) {
+                                sendHigh = true; // 切換到 HIGH 避免 LOW 太早用完
+                            }
+                        }
+
+                        generateLoadMixedCounter++;
+                    } else if (remainingHigh > 0) {
+                        sendHigh = true;
+                    } else {
+                        sendHigh = false;
+                    }
+
+                    if (sendHigh && remainingHigh > 0) {
+                        currentPriority = 1; // HIGH priority
+                        generateLoadHighSent++;
+                    } else if (remainingLow > 0) {
+                        currentPriority = 3; // LOW priority
+                        generateLoadLowSent++;
+                    }
+                }
+
+                payloadBuffer[0] = generateLoadPriorityMarker | (currentPriority & 0x0F);
+            }
 
             //new
             // if(GS->MultipleUnit!=0){
@@ -3722,6 +4107,130 @@ TerminalCommandHandlerReturnType Node::TerminalCommandHandler(const char* comman
                 }
                 return TerminalCommandHandlerReturnType::SUCCESS;
             }
+             // 新增命令：gen_load_mixed - 智能交錯傳輸 HIGH 和 LOW priority
+            if (commandArgsSize > 7 && TERMARGS(3, "gen_load_mixed"))
+            {
+                // 0:action, 1:this, 2:node, 3:cmd, 4:size, 5:highAmt, 6:lowAmt, 7:interval, 8:requestHandle(opt), 9:ratio(opt)
+                // 例如: action 1 node gen_load_mixed 30 150 50 1 1 3
+                // 每個節點發送 150 HIGH + 50 LOW，requestHandle=1，交錯比例 3:1（每 4 個封包中 3 個 HIGH）
+
+                GenerateLoadMixedMessage gltm;
+                CheckedMemset(&gltm, 0, sizeof(GenerateLoadMixedMessage));
+
+                // 1. 基本參數設定
+                gltm.target = destinationNode;
+                gltm.size = Utility::StringToU8(commandArgs[4]);
+                gltm.highAmount = Utility::StringToU16(commandArgs[5]);
+                gltm.lowAmount = Utility::StringToU16(commandArgs[6]);
+                gltm.timeBetweenMessagesDs = Utility::StringToU8(commandArgs[7]);
+
+                // 2. 讀取 requestHandle（可選參數，預設 1）
+                const u8 requestHandle = commandArgsSize > 8 ? Utility::StringToU8(commandArgs[8]) : 1;
+
+                // 3. 讀取交錯比例（可選參數，預設 3 表示 3:1）
+                gltm.interleavingRatio = commandArgsSize > 9 ? Utility::StringToU8(commandArgs[9]) : 3;
+                if (gltm.interleavingRatio == 0) gltm.interleavingRatio = 3;
+
+                // 4. 將 requestHandle 編碼到 interleavingRatio 的高 4 位（巧妙利用空間）
+                // interleavingRatio 實際值範圍 0-15，requestHandle 範圍也是 0-15
+                // 使用公式：編碼值 = (requestHandle << 4) | interleavingRatio
+                gltm.interleavingRatio = (requestHandle << 4) | (gltm.interleavingRatio & 0x0F);
+
+                // 4. 統計設定
+                GS->MultipleUnit = requestHandle;
+                GS->sndCount = (gltm.highAmount + gltm.lowAmount) * (TOTAL_NODE_NUM - 1) * requestHandle;
+                GS->rcvCount = 0;
+
+                // 重置所有統計陣列
+                for (int i = 0; i < TOTAL_NODE_NUM; i++) {
+                    MultipleCount[i] = 0;
+                    CollsndCount[i] = 0;
+                    avgDelay[i] = 0;
+                    rcvCount[i] = 0;
+                    avgDelayHighPrio[i] = 0;
+                    avgDelayLowPrio[i] = 0;
+                    rcvCountHighPrio[i] = 0;
+                    rcvCountLowPrio[i] = 0;
+                    sndCountHighPrio[i] = 0;
+                    sndCountLowPrio[i] = 0;
+                }
+
+                // 提取原始的 ratio 用于显示（低 4 位）
+                u8 displayRatio = gltm.interleavingRatio & 0x0F;
+                trace("Starting MIXED interleaved load: HIGH=%u, LOW=%u, ratio=%u:1, multiplier=%u" EOL, 
+                    gltm.highAmount, gltm.lowAmount, displayRatio, requestHandle);
+
+                // 5. 發送命令給所有節點
+                // 注意：使用 0xFD 作為特殊標記來識別混合交錯模式，避免與優先級值混淆
+                for (int j = 1; j <= TOTAL_NODE_NUM; j++)
+                {
+                    if (j != destinationNode) {
+                        SendModuleActionMessage(
+                            MessageType::MODULE_TRIGGER_ACTION,
+                            j,
+                            (u8)NodeModuleTriggerActionMessages::START_GENERATE_LOAD,
+                            0xFD, // 特殊標記：混合交錯模式（避免與 DeliveryPriority 衝突）
+                            (u8*)&gltm,
+                            sizeof(gltm),
+                            false
+                        );
+                    }
+                }
+                return TerminalCommandHandlerReturnType::SUCCESS;
+            }
+
+             // 新增命令：支持指定優先級的多節點負載生成
+            if (commandArgsSize > 7 && TERMARGS(3, "gen_load_prio"))
+            {
+                // 0:action, 1:this, 2:node, 3:cmd, 4:size, 5:amt, 6:interval, 7:priority, 8:handle(opt)
+
+                GenerateLoadWithPriorityMessage gltm;
+                CheckedMemset(&gltm, 0, sizeof(GenerateLoadWithPriorityMessage));
+
+                // 1. 基本參數設定
+                gltm.target = destinationNode;
+                gltm.size = Utility::StringToU8(commandArgs[4]);
+                gltm.amount = Utility::StringToU16(commandArgs[5]);
+                gltm.timeBetweenMessagesDs = Utility::StringToU8(commandArgs[6]);
+
+                // 2. 讀取優先級參數
+                // 假設輸入 1 代表 High Priority，3 代表 Low Priority
+                u8 priorityVal = Utility::StringToU8(commandArgs[7]);
+                gltm.priority = priorityVal;
+
+                // 3. 處理 Handle (因為多插了一個參數，所以 Handle 變成第 9 個參數，index 8)
+                const u8 requestHandle = commandArgsSize > 8 ? Utility::StringToU8(commandArgs[8]) : 1;
+
+                // 4. 統計設定
+                GS->MultipleUnit = requestHandle;
+                GS->sndCount = gltm.amount * (TOTAL_NODE_NUM - 1) * requestHandle;
+                GS->rcvCount = 0;
+
+                // 重置接收端統計陣列
+                for (int i = 0; i < TOTAL_NODE_NUM; i++) {
+                    MultipleCount[i] = 0;
+                    CollsndCount[i] = 0;
+                    avgDelay[i] = 0;
+                    rcvCount[i] = 0;
+                }
+
+                // 5. 發送命令給所有節點
+                for (int j = 1; j <= TOTAL_NODE_NUM; j++)
+                {
+                    if (j != destinationNode) {
+                        SendModuleActionMessage(
+                            MessageType::MODULE_TRIGGER_ACTION,
+                            j,
+                            (u8)NodeModuleTriggerActionMessages::START_GENERATE_LOAD,
+                            requestHandle,
+                            (u8*)&gltm,
+                            sizeof(gltm),
+                            false
+                        );
+                    }
+                }
+                return TerminalCommandHandlerReturnType::SUCCESS;
+            }
 
             //new command: coll sndCount
             if (commandArgsSize >3 && TERMARGS(3, "snd"))
@@ -3744,6 +4253,70 @@ TerminalCommandHandlerReturnType Node::TerminalCommandHandler(const char* comman
                 }
                 return TerminalCommandHandlerReturnType::SUCCESS;                
             }
+
+             //新增命令: 收集混合模式的统计数据
+            if (commandArgsSize > 3 && TERMARGS(3, "snd_mixed"))
+            {
+                trace("Collecting MIXED mode statistics..." EOL);
+
+                // 发送收集命令给所有节点
+                for (int j = 1; j <= TOTAL_NODE_NUM; j++) 
+                {
+                    if (j != destinationNode) {
+                        SendModuleActionMessage(
+                            MessageType::MODULE_TRIGGER_ACTION,
+                            j,
+                            (u8)NodeModuleTriggerActionMessages::COLLECT_MIXED_DATA,
+                            0,
+                            nullptr,
+                            0,
+                            false
+                        );
+                    }
+                }
+
+                trace("MIXED mode statistics collection sent" EOL);
+                return TerminalCommandHandlerReturnType::SUCCESS;
+            }
+
+            //新增命令: 收集 priority 分开的统计数据
+            if (commandArgsSize > 3 && TERMARGS(3, "snd_prio"))
+            {
+                // 发送收集命令给所有节点
+                for (int j = 1; j <= TOTAL_NODE_NUM; j++) 
+                {
+                    if (j != destinationNode) {
+                        SendModuleActionMessage(
+                            MessageType::MODULE_TRIGGER_ACTION,
+                            j,
+                            (u8)NodeModuleTriggerActionMessages::COLLECT_MIXED_DATA,
+                            0,
+                            nullptr,
+                            0,
+                            false
+                        );
+                    }
+                }
+
+                trace("Collecting priority statistics from all nodes" EOL);
+                return TerminalCommandHandlerReturnType::SUCCESS;
+            }
+
+            //新增命令: 重置 priority 统计数据
+            if (commandArgsSize > 3 && TERMARGS(3, "reset_prio"))
+            {
+                // 重置所有 priority 统计
+                for (int i = 0; i < TOTAL_NODE_NUM; i++) {
+                    avgDelayHighPrio[i] = 0;
+                    avgDelayLowPrio[i] = 0;
+                    rcvCountHighPrio[i] = 0;
+                    rcvCountLowPrio[i] = 0;
+                }
+
+                trace("Priority statistics reset" EOL);
+                return TerminalCommandHandlerReturnType::SUCCESS;
+            }
+
             //new command: avg delay result
             if (commandArgsSize > 3 && TERMARGS(3, "result"))
             {                
@@ -3779,6 +4352,171 @@ TerminalCommandHandlerReturnType Node::TerminalCommandHandler(const char* comman
                         avgDelay[i] = 0;
                         rcvCount[i] = 0;
                 }
+                return TerminalCommandHandlerReturnType::SUCCESS;
+            }
+             //新增命令: 统计高和低優先權封包同時傳送结果
+            if (commandArgsSize > 3 && TERMARGS(3, "result_mixed"))
+            {
+                trace("\\n========== Priority Statistics ==========" EOL);
+
+                u32 avgHigh = 0, avgLow = 0;
+                u32 totalHighRcv = 0, totalLowRcv = 0;
+                u32 totalHighSnd = 0, totalLowSnd = 0;
+
+                for (int i = 0; i < TOTAL_NODE_NUM; i++)
+                {
+                    if ((i+1) != destinationNode) {
+                        u32 tempHigh = 0, tempLow = 0;
+
+                        // 获取目标发送数（不含重传）
+                        u32 highTargetCount = sndCountHighPrio[i];
+                        u32 lowTargetCount = sndCountLowPrio[i];
+                        u32 totalTargetCount = highTargetCount + lowTargetCount;
+
+                        // 计算实际发送数（包含重传），使用和 result 相同的公式
+                        u32 actualTotalSend = (CollsndCount[i] + (GS->MultipleUnit * MultipleCount[i]));
+
+                        // 按比例分配实际发送数到 HIGH 和 LOW
+                        // 先算 HIGH，然后 LOW = 总数 - HIGH，避免舍入误差
+                        u32 highSendCount = 0;
+                        u32 lowSendCount = 0;
+                        if (totalTargetCount > 0) {
+                            highSendCount = (actualTotalSend * highTargetCount) / totalTargetCount;
+                            lowSendCount = actualTotalSend - highSendCount;  // 用减法避免舍入误差
+                        }
+                        if (rcvCountHighPrio[i] > 0) {
+                            tempHigh = avgDelayHighPrio[i] / rcvCountHighPrio[i];
+                            avgHigh += tempHigh;
+                            totalHighRcv += rcvCountHighPrio[i];
+                        }
+
+                        if (rcvCountLowPrio[i] > 0) {
+                            tempLow = avgDelayLowPrio[i] / rcvCountLowPrio[i];
+                            avgLow += tempLow;
+                            totalLowRcv += rcvCountLowPrio[i];
+                        }
+
+                        totalHighSnd += highSendCount;
+                        totalLowSnd += lowSendCount;
+
+                        trace("Node %d: HIGH=%u ms (snd=%u, rcv=%u), LOW=%u ms (snd=%u, rcv=%u)" EOL, 
+                            i + 1, 
+                            tempHigh, highSendCount, rcvCountHighPrio[i],
+                            tempLow, lowSendCount, rcvCountLowPrio[i]);
+                    }
+                }
+
+                u32 activeNodes = TOTAL_NODE_NUM - 1;
+                if (activeNodes > 0) {
+                    // 计算整体重传统计
+                    u32 totalHighRetrans = (totalHighSnd > totalHighRcv) ? (totalHighSnd - totalHighRcv) : 0;
+                    u32 totalLowRetrans = (totalLowSnd > totalLowRcv) ? (totalLowSnd - totalLowRcv) : 0;
+                    u32 overallHighRetransRate = (totalHighRcv > 0) ? ((totalHighRetrans * 100) / totalHighRcv) : 0;
+                    u32 overallLowRetransRate = (totalLowRcv > 0) ? ((totalLowRetrans * 100) / totalLowRcv) : 0;
+
+                    trace("\\nOverall: HIGH=%u ms (snd=%u, rcv=%u), LOW=%u ms (snd=%u, rcv=%u)" EOL,
+                        totalHighRcv > 0 ? avgHigh / activeNodes : 0, totalHighSnd, totalHighRcv,
+                        totalLowRcv > 0 ? avgLow / activeNodes : 0, totalLowSnd, totalLowRcv);
+
+                    if (totalHighRcv > 0 && totalLowRcv > 0) {
+                        u32 avgHighDelay = avgHigh / activeNodes;
+                        u32 avgLowDelay = avgLow / activeNodes;
+                        if (avgHighDelay < avgLowDelay) {
+                            u32 improvement = ((avgLowDelay - avgHighDelay) * 100) / avgLowDelay;
+                            trace("HIGH priority is %u%% faster" EOL, improvement);
+                        }
+                    }
+
+                    // 显示发送统计
+                    u32 expectedTotal = GS->sndCount;
+                    u32 actualTotal = totalHighSnd + totalLowSnd;
+                    trace("Expected send: %u, Actual send: %u (HIGH=%u, LOW=%u)" EOL,
+                        expectedTotal, actualTotal, totalHighSnd, totalLowSnd);
+                }
+                trace("=========================================" EOL);
+
+                return TerminalCommandHandlerReturnType::SUCCESS;
+            }
+
+            //新增命令: 显示 priority 分开的统计结果
+            if (commandArgsSize > 3 && TERMARGS(3, "result_prio"))
+            {
+                trace("\\n========== Priority Statistics ==========" EOL);
+
+                u32 avgHigh = 0, avgLow = 0;
+                u32 totalHighRcv = 0, totalLowRcv = 0;
+                u32 totalHighSnd = 0, totalLowSnd = 0;
+
+                for (int i = 0; i < TOTAL_NODE_NUM; i++)
+                {
+                    if ((i+1) != destinationNode) {
+                        u32 tempHigh = 0, tempLow = 0;
+
+                        // 获取目标发送数（不含重传）
+                        u32 highTargetCount = sndCountHighPrio[i];
+                        u32 lowTargetCount = sndCountLowPrio[i];
+                        u32 totalTargetCount = highTargetCount + lowTargetCount;
+
+                        // 计算实际发送数（包含重传），使用和 result 相同的公式
+                        u32 actualTotalSend = (CollsndCount[i] + (GS->MultipleUnit * MultipleCount[i]));
+
+                        // 按比例分配实际发送数到 HIGH 和 LOW
+                        // 先算 HIGH，然后 LOW = 总数 - HIGH，避免舍入误差
+                        u32 highSendCount = 0;
+                        u32 lowSendCount = 0;
+                        if (totalTargetCount > 0) {
+                            highSendCount = (actualTotalSend * highTargetCount) / totalTargetCount;
+                            lowSendCount = actualTotalSend - highSendCount;  // 用减法避免舍入误差
+                        }
+                        if (rcvCountHighPrio[i] > 0) {
+                            tempHigh = avgDelayHighPrio[i] / rcvCountHighPrio[i];
+                            avgHigh += tempHigh;
+                            totalHighRcv += rcvCountHighPrio[i];
+                        }
+
+                        if (rcvCountLowPrio[i] > 0) {
+                            tempLow = avgDelayLowPrio[i] / rcvCountLowPrio[i];
+                            avgLow += tempLow;
+                            totalLowRcv += rcvCountLowPrio[i];
+                        }
+
+                        totalHighSnd += highSendCount;
+                        totalLowSnd += lowSendCount;
+
+                        trace("Node %d: HIGH=%u ms (rcv=%u), LOW=%u ms (rcv=%u)" EOL, 
+                            i + 1, 
+                            tempHigh, rcvCountHighPrio[i],
+                            tempLow, rcvCountLowPrio[i]);
+                    }
+                }
+
+                u32 activeNodes = TOTAL_NODE_NUM - 1;
+                if (activeNodes > 0) {
+                    // 计算整体重传统计
+                    u32 totalHighRetrans = (totalHighSnd > totalHighRcv) ? (totalHighSnd - totalHighRcv) : 0;
+                    u32 totalLowRetrans = (totalLowSnd > totalLowRcv) ? (totalLowSnd - totalLowRcv) : 0;
+                    u32 overallHighRetransRate = (totalHighRcv > 0) ? ((totalHighRetrans * 100) / totalHighRcv) : 0;
+                    u32 overallLowRetransRate = (totalLowRcv > 0) ? ((totalLowRetrans * 100) / totalLowRcv) : 0;
+
+                    trace("\\nOverall: HIGH=%u ms (rcv=%u), LOW=%u ms (rcv=%u)" EOL,
+                        totalHighRcv > 0 ? avgHigh / activeNodes : 0, totalHighRcv,
+                        totalLowRcv > 0 ? avgLow / activeNodes : 0, totalLowRcv);
+
+                    if (totalHighRcv > 0 && totalLowRcv > 0) {
+                        u32 avgHighDelay = avgHigh / activeNodes;
+                        u32 avgLowDelay = avgLow / activeNodes;
+                        if (avgHighDelay < avgLowDelay) {
+                            u32 improvement = ((avgLowDelay - avgHighDelay) * 100) / avgLowDelay;
+                            trace("HIGH priority is %u%% faster" EOL, improvement);
+                        }
+                    }
+
+                    // 显示发送统计
+                    u32 expectedTotal = GS->sndCount;
+                    u32 actualTotal = totalHighSnd + totalLowSnd;
+                }
+                trace("=========================================" EOL);
+
                 return TerminalCommandHandlerReturnType::SUCCESS;
             }
 
@@ -3932,7 +4670,93 @@ TerminalCommandHandlerReturnType Node::TerminalCommandHandler(const char* comman
                 return TerminalCommandHandlerReturnType::SUCCESS;
             }
 
+         //新加入動態調整CI方法
+            else if (TERMARGS(3, "set_scan_interval"))
+            {
+                if (commandArgsSize < 5) return TerminalCommandHandlerReturnType::NOT_ENOUGH_ARGUMENTS;
+                bool didError = false;
+                u16 interval = Utility::StringToU16(commandArgs[4], &didError);
+                if (didError) return TerminalCommandHandlerReturnType::WRONG_ARGUMENT;
 
+                NodeId targetNodeId = 0;
+                if (commandArgsSize >= 6) {
+                    targetNodeId = Utility::TerminalArgumentToNodeId(commandArgs[5], &didError);
+                    if (didError) return TerminalCommandHandlerReturnType::WRONG_ARGUMENT;
+                }
+
+                if (targetNodeId != 0) {
+                    logt("CMD", "Requesting connection interval to be updated to %u ms for node %u's connection with peer %u (using set_scan_interval command).", interval, destinationNode, targetNodeId);
+
+                    struct UpdateConnIntervalMessageWithTarget {
+                        u16 newIntervalMs;
+                        NodeId targetNodeId;
+                    };
+
+                    UpdateConnIntervalMessageWithTarget message;
+                    message.newIntervalMs = interval;
+                    message.targetNodeId = targetNodeId;
+
+                    SendModuleActionMessage(
+                        MessageType::MODULE_TRIGGER_ACTION, destinationNode,
+                        (u8)NodeModuleTriggerActionMessages::SET_CONN_INTERVAL,
+                        0, (u8*)&message, sizeof(message), false);
+                } else {
+                    logt("CMD", "Requesting scan interval to be updated to %u ms for node %u.", interval, destinationNode);
+
+                    UpdateConnIntervalMessage message;
+                    message.newIntervalMs = interval;
+
+                    SendModuleActionMessage(
+                        MessageType::MODULE_TRIGGER_ACTION, destinationNode,
+                        (u8)NodeModuleTriggerActionMessages::SET_SCAN_INTERVAL,
+                        0, (u8*)&message, sizeof(message), false);
+                }
+
+                return TerminalCommandHandlerReturnType::SUCCESS;
+            }
+            else if (TERMARGS(3, "set_conn_interval"))
+            {
+                if (commandArgsSize < 5) return TerminalCommandHandlerReturnType::NOT_ENOUGH_ARGUMENTS;
+                bool didError = false;
+                u16 interval = Utility::StringToU16(commandArgs[4], &didError);
+                if (didError) return TerminalCommandHandlerReturnType::WRONG_ARGUMENT;
+
+                NodeId targetNodeId = 0;
+                if (commandArgsSize >= 6) {
+                    targetNodeId = Utility::TerminalArgumentToNodeId(commandArgs[5], &didError);
+                    if (didError) return TerminalCommandHandlerReturnType::WRONG_ARGUMENT;
+                }
+
+                if (targetNodeId != 0) {
+                    logt("CMD", "Requesting connection interval to be updated to %u ms for node %u's connection with peer %u.", interval, destinationNode, targetNodeId);
+
+                    struct UpdateConnIntervalMessageWithTarget {
+                        u16 newIntervalMs;
+                        NodeId targetNodeId;
+                    };
+
+                    UpdateConnIntervalMessageWithTarget message;
+                    message.newIntervalMs = interval;
+                    message.targetNodeId = targetNodeId;
+
+                    SendModuleActionMessage(
+                        MessageType::MODULE_TRIGGER_ACTION, destinationNode,
+                        (u8)NodeModuleTriggerActionMessages::SET_CONN_INTERVAL,
+                        0, (u8*)&message, sizeof(message), false);
+                } else {
+                    logt("CMD", "Requesting connection interval to be updated to %u ms for node %u.", interval, destinationNode);
+
+                    UpdateConnIntervalMessage message;
+                    message.newIntervalMs = interval;
+
+                    SendModuleActionMessage(
+                        MessageType::MODULE_TRIGGER_ACTION, destinationNode,
+                        (u8)NodeModuleTriggerActionMessages::SET_CONN_INTERVAL,
+                        0, (u8*)&message, sizeof(message), false);
+                }
+
+                return TerminalCommandHandlerReturnType::SUCCESS;
+            }  
         }
     }
 
