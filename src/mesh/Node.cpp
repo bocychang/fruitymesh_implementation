@@ -68,31 +68,38 @@ constexpr u8 connectAttemptsBeforeBlacklisting = 5;
 constexpr u8 MESH_SERVICE_BASE_UUID128[] = { 0x23, 0xD1, 0xBC, 0xEA, 0x5F, 0x78, 0x23, 0x15, 0xDE, 0xEF, 0x12, 0x12, 0x00, 0x00, 0x00, 0x00 };
 constexpr u16 MESH_SERVICE_CHARACTERISTIC_UUID = 0x1524;
 
-//new
-NodeId root;
-int init =-1;  //初始化
-int numNodes = -1; //Node數
-int flag = -1; // 開關用
-int counta = 0; // 測試關閉啟用count數
-int testdis=0;
+//new: 全域變數定義（使用 static 避免外部連結衝突）
+static NodeId root;
+static int init = -1;  //初始化
+static int numNodes = -1; //Node數
+static int flag = -1; // 開關用
+static int counta = 0; // 測試關閉啟用count數
+static int testdis = 0;
 //new: avg delay
-u8 TOTAL_NODE_NUM = -1;//nnber 注意 17
+static u8 TOTAL_NODE_NUM = -1;//nnber 注意 17
 
-u32 MultipleCount[16];
-u32 CollsndCount[16];
-u32 avgDelay[16];
-int rcvCount[16];
-const char* cmd[16];
+// 注意：統計陣列定義為 static，避免影響類別對齊
+static u32 avgDelay[16];          // 平均延遲
+static u32 rcvCountArray[16];     // 接收計數陣列
+static u32 MultipleCountArray[16];// 多次傳輸計數陣列
+static u32 CollsndCountArray[16]; // 碰撞傳送計數陣列
+static u32 avgDelayHighPrio[16];  // HIGH priority 平均延遲
+static u32 avgDelayLowPrio[16];   // LOW priority 平均延遲
+static u32 rcvCountHighPrio[16];  // HIGH priority 接收計數
+static u32 rcvCountLowPrio[16];   // LOW priority 接收計數
+static u32 sndCountHighPrio[16];  // HIGH priority 發送計數
+static u32 sndCountLowPrio[16];   // LOW priority 發送計數
+static const char* cmd[16];
 
-int ssettime=-1; // ssettime 開關
-int delayTime = -1; // delayTime 開關
-int adjust=-1; //調整誤差 開關
-int errorIndex=0; //誤差值
+static int ssettime = -1; // ssettime 開關
+static int delayTime = -1; // delayTime 開關
+static int adjust = -1; //調整誤差 開關
+static int errorIndex = 0; //誤差值
 
-bool delayReporter=0; //default reporter delay
-bool switchReporter=0; //default
+static bool delayReporter = false; //default reporter delay
+static bool switchReporter = false; //default
 
-bool generate_load=0; //default generate load  
+static bool generate_load = false; //default generate load  
 
 
 Node::Node()
@@ -986,7 +993,7 @@ void Node::MeshMessageReceivedHandler(BaseConnection* connection, BaseConnection
                     packetDelay = packet->timestamp - packetReceivedTime;
 
                 avgDelay[packetHeader->sender - 1] += packetDelay;
-                rcvCount[packetHeader->sender - 1] += 1;
+                rcvCountArray[packetHeader->sender - 1] += 1;
                 // GS->rcvCount += 1; // 累加全局接收计数
 
                 // 新增：分别统计 high/low priority
@@ -1095,14 +1102,14 @@ void Node::MeshMessageReceivedHandler(BaseConnection* connection, BaseConnection
             else if(packet->actionType == (u8)NodeModuleTriggerActionMessages::TRANSMIT_DATA_CollsndCount)
             {
                 GS->CollsndCount+=(u32)packet->requestHandle;
-                CollsndCount[packetHeader->sender-1]+=(u32)packet->requestHandle;
+                CollsndCountArray[packetHeader->sender-1]+=(u32)packet->requestHandle;
             }
             //new collect data
             else if(packet->actionType == (u8)NodeModuleTriggerActionMessages::TRANSMIT_DATA_MultipleCount)
             {
                  GenerateLoadTriggerMessage const * message = (GenerateLoadTriggerMessage const *)packet->data; //new
                 GS->MultipleCount+=(u32)packet->requestHandle;
-                MultipleCount[packetHeader->sender-1]+=(u32)packet->requestHandle;
+                MultipleCountArray[packetHeader->sender-1]+=(u32)packet->requestHandle;
                 trace("GS->MultipleCount %u" EOL, GS->MultipleCount);
                
 
@@ -1537,7 +1544,7 @@ void Node::MeshMessageReceivedHandler(BaseConnection* connection, BaseConnection
                     for (u32 i = 0; i < conns.count; i++) {
                         if (conns.handles[i].GetPartnerId() == targetNodeId) {
                             // Directly call the UpdateConnectionInterval method on the Node class
-                            UpdateConnectionInterval(conns.handles[i].GetConnection()->connectionHandle, newIntervalMs);
+                            UpdateConnectionInterval(conns.handles[i].GetConnection()->connectionHandle, newIntervalMs);(conns.handles[i].GetConnection()->connectionHandle, newIntervalMs);
                             found = true;
                             break;
                         }
@@ -2622,13 +2629,13 @@ joinMeBufferPacket* Node::DetermineBestClusterAsMaster()
 //Connect to big clusters but big clusters must connect nodes that are not able 
 u32 Node::CalculateClusterScoreAsMaster(const joinMeBufferPacket& packet) const
 {
-    if(1) return 0;
+    // if(1) return 0;
     //new test if slave node id > now node id return 0; 
     //if (packet.payload.sender < configuration.nodeId) return 0;    
     // if (packet.payload.sender != 5 && packet.payload.sender != 6) return 0; 
     // if (packet.payload.sender != 3 && packet.payload.sender != 4) return 0;  
     // if (packet.payload.sender != 1)  return 0; 
-    // if (packet.payload.sender != 2)  return 0; 
+    if (packet.payload.sender != 2)  return 0; 
     // if (packet.payload.sender != 3)  return 0; 
     // if (packet.payload.sender != 4)  return 0; 
     // if (packet.payload.sender != 5)  return 0; 
@@ -3754,6 +3761,30 @@ void Node::RecordStorageEventHandler(u16 recordId, RecordStorageResultCode resul
     }
 }
 
+ErrorType Node::UpdateConnectionInterval(u16 connectionHandle, u16 newIntervalMs)
+{
+    // Convert milliseconds to BLE connection interval units (1.25ms units)
+    u16 intervalUnits = MSEC_TO_UNITS(newIntervalMs, CONFIG_UNIT_1_25_MS);
+    
+    // Set up connection parameters
+    FruityHal::BleGapConnParams connParams;
+    connParams.minConnInterval = intervalUnits;
+    connParams.maxConnInterval = intervalUnits;
+    connParams.slaveLatency = 0;
+    connParams.connSupTimeout = MSEC_TO_UNITS(6000, CONFIG_UNIT_10_MS); // 6 second timeout
+    
+    // Call the HAL function to update connection parameters
+    ErrorType err = FruityHal::BleGapConnectionParamsUpdate(connectionHandle, connParams);
+    
+    if (err == ErrorType::SUCCESS) {
+        logt("NODE", "Connection interval update initiated for handle %u to %u ms", connectionHandle, newIntervalMs);
+    } else {
+        logt("NODE", "Connection interval update failed for handle %u, error: %u", connectionHandle, (u32)err);
+    }
+    
+    return err;
+}
+
 // //CE CE windowsize setting new
 // void Node::SetConnectionInterval(u16 minConnectionInterval, u16 maxConnectionInterval)
 // {
@@ -4084,10 +4115,10 @@ TerminalCommandHandlerReturnType Node::TerminalCommandHandler(const char* comman
                 GS->rcvCount = 0;
                 for (int i = 0; i < TOTAL_NODE_NUM ; i++) //  for (int i = 0; i < TOTAL_NODE_NUM - 1; i++)
                 {
-                        MultipleCount[i]=0;
-                        CollsndCount[i]=0;
+                        MultipleCountArray[i]=0;
+                        CollsndCountArray[i]=0;
                         avgDelay[i] = 0;
-                        rcvCount[i] = 0;
+                        rcvCountArray[i] = 0;
                 }
 
                 // start generating for 1 sink only
@@ -4143,10 +4174,10 @@ TerminalCommandHandlerReturnType Node::TerminalCommandHandler(const char* comman
 
                 // 重置所有統計陣列
                 for (int i = 0; i < TOTAL_NODE_NUM; i++) {
-                    MultipleCount[i] = 0;
-                    CollsndCount[i] = 0;
+                    MultipleCountArray[i] = 0;
+                    CollsndCountArray[i] = 0;
                     avgDelay[i] = 0;
-                    rcvCount[i] = 0;
+                    rcvCountArray[i] = 0;
                     avgDelayHighPrio[i] = 0;
                     avgDelayLowPrio[i] = 0;
                     rcvCountHighPrio[i] = 0;
@@ -4208,10 +4239,10 @@ TerminalCommandHandlerReturnType Node::TerminalCommandHandler(const char* comman
 
                 // 重置接收端統計陣列
                 for (int i = 0; i < TOTAL_NODE_NUM; i++) {
-                    MultipleCount[i] = 0;
-                    CollsndCount[i] = 0;
+                    MultipleCountArray[i] = 0;
+                    CollsndCountArray[i] = 0;
                     avgDelay[i] = 0;
-                    rcvCount[i] = 0;
+                    rcvCountArray[i] = 0;
                 }
 
                 // 5. 發送命令給所有節點
@@ -4323,18 +4354,21 @@ TerminalCommandHandlerReturnType Node::TerminalCommandHandler(const char* comman
                 //  0     1    2      3
                 //action this node result
                 u32 avg = 0;
+                GS->rcvCount = 0;
                 for (int i = 0; i < TOTAL_NODE_NUM; i++)
                 {
                     if ((i+1) != destinationNode) { //new
                         u32 temp;
                         u32 sendcount=0;
-                        sendcount = (CollsndCount[i]+(GS->MultipleUnit*MultipleCount[i]));
-                        if (rcvCount[i] == 0)
+                        sendcount = (CollsndCountArray[i]+(GS->MultipleUnit*MultipleCountArray[i]));
+                        if (rcvCountArray[i] == 0)
                             temp = 0;
                         else
-                            temp = avgDelay[i] / rcvCount[i];
-                        trace("Avg delay of node %d = %u ms , send count = %u , rcv count = %d " EOL, i + 1, temp, sendcount, rcvCount[i]);
+                            temp = avgDelay[i] / rcvCountArray[i];
+                        trace("Avg delay of node %d = %u ms , send count = %u , rcv count = %d " EOL, i + 1, temp, sendcount, rcvCountArray[i]);
                         avg += temp;
+
+                        GS->rcvCount += rcvCountArray[i];
                     }
                 }
 
@@ -4347,10 +4381,10 @@ TerminalCommandHandlerReturnType Node::TerminalCommandHandler(const char* comman
                 GS->rcvCount=0;
                 for (int i = 0; i < TOTAL_NODE_NUM ; i++) //  for (int i = 0; i < TOTAL_NODE_NUM - 1; i++)
                 {
-                        MultipleCount[i]=0;
-                        CollsndCount[i]=0;
+                        MultipleCountArray[i]=0;
+                        CollsndCountArray[i]=0;
                         avgDelay[i] = 0;
-                        rcvCount[i] = 0;
+                        rcvCountArray[i] = 0;
                 }
                 return TerminalCommandHandlerReturnType::SUCCESS;
             }
@@ -4374,7 +4408,7 @@ TerminalCommandHandlerReturnType Node::TerminalCommandHandler(const char* comman
                         u32 totalTargetCount = highTargetCount + lowTargetCount;
 
                         // 计算实际发送数（包含重传），使用和 result 相同的公式
-                        u32 actualTotalSend = (CollsndCount[i] + (GS->MultipleUnit * MultipleCount[i]));
+                        u32 actualTotalSend = (CollsndCountArray[i] + (GS->MultipleUnit * MultipleCountArray[i]));
 
                         // 按比例分配实际发送数到 HIGH 和 LOW
                         // 先算 HIGH，然后 LOW = 总数 - HIGH，避免舍入误差
@@ -4458,7 +4492,7 @@ TerminalCommandHandlerReturnType Node::TerminalCommandHandler(const char* comman
                         u32 totalTargetCount = highTargetCount + lowTargetCount;
 
                         // 计算实际发送数（包含重传），使用和 result 相同的公式
-                        u32 actualTotalSend = (CollsndCount[i] + (GS->MultipleUnit * MultipleCount[i]));
+                        u32 actualTotalSend = (CollsndCountArray[i] + (GS->MultipleUnit * MultipleCountArray[i]));
 
                         // 按比例分配实际发送数到 HIGH 和 LOW
                         // 先算 HIGH，然后 LOW = 总数 - HIGH，避免舍入误差

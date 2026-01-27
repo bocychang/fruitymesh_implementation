@@ -294,8 +294,7 @@ private:
             u8 amount;
             u8 timeBetweenMessagesDs;
         };
-#pragma pack(push)
-#pragma pack(1)
+        
         struct GenerateLoadWithPriorityMessage{
             NodeId target;
             u8 size;
@@ -337,16 +336,8 @@ private:
         u32 generateLoadMixedCounter = 0;   // 混合模式計數器
 
         constexpr static u8 generateLoadMagicNumber = 0x91;
-           constexpr static u8 generateLoadPriorityMarker = 0xF0; // 标记 priority 包
+        constexpr static u8 generateLoadPriorityMarker = 0xF0; // 标记 priority 包
         NodeId generateLoadTarget = 0;
-
-        // 新增：分别统计 high priority 和 low priority
-        u32 avgDelayHighPrio[100] = {0}; 
-        u32 avgDelayLowPrio[100] = {0};
-        u32 rcvCountHighPrio[100] = {0};
-        u32 rcvCountLowPrio[100] = {0};
-        u32 sndCountHighPrio[100] = {0};  // 發送計數統計
-        u32 sndCountLowPrio[100] = {0};   // 發送計數統計
 
         u32 emergencyDisconnectTimerDs = 0; //The time since this node was not involved in any mesh. Can be reset by other means as well, e.g. when an emergency disconnect was sent.
         constexpr static u32 emergencyDisconnectTimerTriggerDs = SEC_TO_DS(/*Two minutes*/ 2 * 60);
