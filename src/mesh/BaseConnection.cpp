@@ -387,9 +387,9 @@ void BaseConnection::HandlePacketSent(u8 sentUnreliable, u8 sentReliable)
         activeQueue->PopPacket();
         dataSentLength = 0;
 
-        trace("--------------------------------------------------------------------------------------\n" );
-        trace(" %u packet in buffer, time: %u \n", activeQueue->GetAmountOfPackets(), GS->delaytimer);
-        trace("--------------------------------------------------------------------------------------\n" );
+        // trace("--------------------------------------------------------------------------------------\n" );
+        // trace(" %u packet in buffer, time: %u \n", activeQueue->GetAmountOfPackets(), GS->delaytimer);
+        // trace("--------------------------------------------------------------------------------------\n" );
     }
 
     //Log how many packets have been sent

@@ -311,6 +311,7 @@ private:
             u16 lowAmount;       // LOW priority 封包數量
             u8 timeBetweenMessagesDs;
             u8 interleavingRatio; // 交錯比例：每 N 個封包中 HIGH 的數量 (預設 3 表示 3:1)
+            u8 requestHandle;     // 支援 0-255，用於批量發送和統計
         };
 #pragma pack(pop)
         //State for straggered connection interval updates

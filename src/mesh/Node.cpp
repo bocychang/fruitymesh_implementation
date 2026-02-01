@@ -861,9 +861,9 @@ void Node::MeshMessageReceivedHandler(BaseConnection* connection, BaseConnection
                     generateLoadPayloadSize = message->size;
                     generateLoadTimeBetweenMessagesDs = message->timeBetweenMessagesDs;
 
-                    // 解碼 interleavingRatio：高 4 位是 requestHandle，低 4 位是真正的 ratio
-                    u8 decodedMultiplier = (message->interleavingRatio >> 4) & 0x0F;
-                    u8 decodedRatio = message->interleavingRatio & 0x0F;
+                    // 直接讀取 requestHandle 和 ratio（支援 0-255）
+                    u8 decodedMultiplier = message->requestHandle;
+                    u8 decodedRatio = message->interleavingRatio;
                     if (decodedMultiplier == 0) decodedMultiplier = 1; // 防止除以 0
                     if (decodedRatio == 0) decodedRatio = 3; // 預設 3:1
 
@@ -1021,7 +1021,7 @@ void Node::MeshMessageReceivedHandler(BaseConnection* connection, BaseConnection
 
                 if ((GS->rcvCount % 1000) == 0)
                 {
-                    logjson("NODE", "{\"type\":\"generate_load_chunk\",\"nodeId\":%d,\"size\":%u,\"payloadCorrect\":%u,\"receivedTime\":%u, \"stamp\":%u, \"delay\":%u}" SEP, packetHeader->sender, (u32)payloadLength, (u32)payloadCorrect, packetReceivedTime, packet->timestamp, packetDelay);
+                    // logjson("NODE", "{\"type\":\"generate_load_chunk\",\"nodeId\":%d,\"size\":%u,\"payloadCorrect\":%u,\"receivedTime\":%u, \"stamp\":%u, \"delay\":%u}" SEP, packetHeader->sender, (u32)payloadLength, (u32)payloadCorrect, packetReceivedTime, packet->timestamp, packetDelay);
                 }
                 // trace("node id : %d, generateTime : %u ms, sendTime : %u ms, receivedTime : %u ms, delay : %u ms," EOL, packetHeader->sender,packet->timestamp,packet->sendtime,packetReceivedTime,packetDelay);
             }
@@ -1119,7 +1119,7 @@ void Node::MeshMessageReceivedHandler(BaseConnection* connection, BaseConnection
             //new find_degree
             else if (packet->actionType == (u8)NodeModuleTriggerActionMessages::FIND_DEGREE)
             {
-                TOTAL_NODE_NUM = 3;
+                TOTAL_NODE_NUM = 6;
 
                     /*初始化deg記憶體空間==-1*/
                 if (init == -1) {
@@ -2629,13 +2629,13 @@ joinMeBufferPacket* Node::DetermineBestClusterAsMaster()
 //Connect to big clusters but big clusters must connect nodes that are not able 
 u32 Node::CalculateClusterScoreAsMaster(const joinMeBufferPacket& packet) const
 {
-    // if(1) return 0;
+    if(1) return 0;
     //new test if slave node id > now node id return 0; 
     //if (packet.payload.sender < configuration.nodeId) return 0;    
     // if (packet.payload.sender != 5 && packet.payload.sender != 6) return 0; 
     // if (packet.payload.sender != 3 && packet.payload.sender != 4) return 0;  
     // if (packet.payload.sender != 1)  return 0; 
-    if (packet.payload.sender != 2)  return 0; 
+    // if (packet.payload.sender != 2)  return 0; 
     // if (packet.payload.sender != 3)  return 0; 
     // if (packet.payload.sender != 4)  return 0; 
     // if (packet.payload.sender != 5)  return 0; 
@@ -4155,19 +4155,17 @@ TerminalCommandHandlerReturnType Node::TerminalCommandHandler(const char* comman
                 gltm.lowAmount = Utility::StringToU16(commandArgs[6]);
                 gltm.timeBetweenMessagesDs = Utility::StringToU8(commandArgs[7]);
 
-                // 2. 讀取 requestHandle（可選參數，預設 1）
+                // 2. 讀取 requestHandle（可選參數，預設 1），支援 0-255
                 const u8 requestHandle = commandArgsSize > 8 ? Utility::StringToU8(commandArgs[8]) : 1;
 
                 // 3. 讀取交錯比例（可選參數，預設 3 表示 3:1）
                 gltm.interleavingRatio = commandArgsSize > 9 ? Utility::StringToU8(commandArgs[9]) : 3;
                 if (gltm.interleavingRatio == 0) gltm.interleavingRatio = 3;
 
-                // 4. 將 requestHandle 編碼到 interleavingRatio 的高 4 位（巧妙利用空間）
-                // interleavingRatio 實際值範圍 0-15，requestHandle 範圍也是 0-15
-                // 使用公式：編碼值 = (requestHandle << 4) | interleavingRatio
-                gltm.interleavingRatio = (requestHandle << 4) | (gltm.interleavingRatio & 0x0F);
+                // 4. 直接將 requestHandle 存入結構體（支援 0-255）
+                gltm.requestHandle = requestHandle;
 
-                // 4. 統計設定
+                // 5. 統計設定
                 GS->MultipleUnit = requestHandle;
                 GS->sndCount = (gltm.highAmount + gltm.lowAmount) * (TOTAL_NODE_NUM - 1) * requestHandle;
                 GS->rcvCount = 0;
@@ -4186,10 +4184,9 @@ TerminalCommandHandlerReturnType Node::TerminalCommandHandler(const char* comman
                     sndCountLowPrio[i] = 0;
                 }
 
-                // 提取原始的 ratio 用于显示（低 4 位）
-                u8 displayRatio = gltm.interleavingRatio & 0x0F;
-                trace("Starting MIXED interleaved load: HIGH=%u, LOW=%u, ratio=%u:1, multiplier=%u" EOL, 
-                    gltm.highAmount, gltm.lowAmount, displayRatio, requestHandle);
+                // 直接使用 ratio 显示
+                trace("Starting MIXED interleaved load: HIGH=%u, LOW=%u, ratio=%u:1, multiplier=%u" EOL,
+                    gltm.highAmount, gltm.lowAmount, gltm.interleavingRatio, requestHandle);
 
                 // 5. 發送命令給所有節點
                 // 注意：使用 0xFD 作為特殊標記來識別混合交錯模式，避免與優先級值混淆
