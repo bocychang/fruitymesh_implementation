@@ -331,8 +331,8 @@ private:
         bool generateLoadMixedMode = false; // 是否為混合交錯模式
         u32 generateLoadHighTarget = 0;     // HIGH priority 目標總數
         u32 generateLoadLowTarget = 0;      // LOW priority 目標總數
-        u32 generateLoadHighSent = 0;       // 已發送 HIGH 數量
-        u32 generateLoadLowSent = 0;        // 已發送 LOW 數量
+        u32 generateLoadHighSent = 0;       // 計劃發送 HIGH 數量（不含重傳）
+        u32 generateLoadLowSent = 0;        // 計劃發送 LOW 數量（不含重傳）
         u8 generateLoadInterleavingRatio = 3; // 交錯比例 (預設 3:1)
         u32 generateLoadMixedCounter = 0;   // 混合模式計數器
 
@@ -356,6 +356,11 @@ private:
         void SaveRecordStorageDynamicGroup(NodeId receiver, NodeModuleActionResponseMessages actionType, u8 requestHandle, NodeId group);
 
     public:    
+         // 實際發送計數（包含重傳）- 由 BaseConnection 累加，通過 COLLECT_MIXED_DATA 收集
+        u32 generateLoadHighActualSent = 0;  // 實際發送 HIGH 數量（含重傳）
+        u32 generateLoadLowActualSent = 0;   // 實際發送 LOW 數量（含重傳）
+        u32 sndCountHighPrio[16] = {0};     // 各節點 HIGH 發送數（通過 COLLECT_MIXED_DATA 收集）
+        u32 sndCountLowPrio[16] = {0};      // 各節點 LOW 發送數（通過 COLLECT_MIXED_DATA 收集)
         DECLARE_CONFIG_AND_PACKED_STRUCT(NodeConfiguration);
 
 

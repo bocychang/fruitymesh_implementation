@@ -89,6 +89,8 @@ static u32 rcvCountHighPrio[16];  // HIGH priority 接收計數
 static u32 rcvCountLowPrio[16];   // LOW priority 接收計數
 static u32 sndCountHighPrio[16];  // HIGH priority 發送計數
 static u32 sndCountLowPrio[16];   // LOW priority 發送計數
+static u32 generateLoadHighActualSent;  // 實際發送 HIGH 數量（含重傳）
+static u32 generateLoadLowActualSent;   // 實際發送 LOW 數量（含重傳
 static const char* cmd[16];
 
 static int ssettime = -1; // ssettime 開關
@@ -861,38 +863,37 @@ void Node::MeshMessageReceivedHandler(BaseConnection* connection, BaseConnection
                     generateLoadPayloadSize = message->size;
                     generateLoadTimeBetweenMessagesDs = message->timeBetweenMessagesDs;
 
-                    // 直接讀取 requestHandle 和 ratio（支援 0-255）
-                    u8 decodedMultiplier = message->requestHandle;
-                    u8 decodedRatio = message->interleavingRatio;
-                    if (decodedMultiplier == 0) decodedMultiplier = 1; // 防止除以 0
-                    if (decodedRatio == 0) decodedRatio = 3; // 預設 3:1
+                     // 直接讀取參數（不需要解碼）
+                    u8 multiplier = message->requestHandle;
+                    u8 ratio = message->interleavingRatio;
+                    if (multiplier == 0) multiplier = 1; // 防止除以 0
+                    if (ratio == 0) ratio = 3; // 預設 3:1
 
                     // 設定混合模式參數
                     generateLoadMixedMode = true;
                     generateLoadWithPriorityFlag = true;
-                    generateLoadHighTarget = message->highAmount * decodedMultiplier;  // 乘以 multiplier
-                    generateLoadLowTarget = message->lowAmount * decodedMultiplier;    // 乘以 multiplier
+                    generateLoadHighTarget = message->highAmount * multiplier;  // 乘以 multiplier
+                    generateLoadLowTarget = message->lowAmount * multiplier;    // 乘以 multiplier
                     generateLoadHighSent = 0;
                     generateLoadLowSent = 0;
-                    generateLoadInterleavingRatio = decodedRatio;
                     generateLoadMixedCounter = 0;
-                    generateLoadMessagesLeft = (message->highAmount + message->lowAmount) * decodedMultiplier;
+                    generateLoadMessagesLeft = (message->highAmount + message->lowAmount) * multiplier;
                     generateLoadRequestHandle = 0;
 
                     GS->CollsndCount = 0;
                     GS->MultipleCount = 0;
-                    GS->MultipleUnit = decodedMultiplier;
+                    GS->MultipleUnit = multiplier;
 
                     trace("DEBUG: gen_load_mixed - HIGH=%u, LOW=%u, ratio=%u:1, multiplier=%u, total=%u" EOL, 
-                        message->highAmount, message->lowAmount, decodedRatio, decodedMultiplier, generateLoadMessagesLeft);
+                        message->highAmount, message->lowAmount, ratio, multiplier, generateLoadMessagesLeft);
 
                     logt("NODE", "Generating MIXED interleaved load. Target: %u size: %u HIGH: %u LOW: %u ratio: %u:1 multiplier: %u interval: %u",
                         message->target,
                         message->size,
                         message->highAmount,
                         message->lowAmount,
-                        decodedRatio,
-                        decodedMultiplier,
+                        ratio,
+                        multiplier,
                         message->timeBetweenMessagesDs);
                 }
                 else if (payloadLength >= sizeof(GenerateLoadWithPriorityMessage)) {
@@ -938,6 +939,12 @@ void Node::MeshMessageReceivedHandler(BaseConnection* connection, BaseConnection
                     GS->CollsndCount = 0;
                     GS->MultipleCount = 0;
                     GS->MultipleUnit = packet->requestHandle;
+                    
+                     // 初始化發送端計數器（用於後續 snd_prio 收集）
+                    generateLoadHighSent = 0;
+                    generateLoadLowSent = 0;
+                    generateLoadHighActualSent = 0;  // 重置實際發送計數
+                    generateLoadLowActualSent = 0;   // 重置實際發送計數
 
                     trace("DEBUG: multi_generate_load - MultipleUnit=%u, amount=%u, requestHandle=%u" EOL, 
                         GS->MultipleUnit, message->amount, packet->requestHandle);
@@ -1054,14 +1061,14 @@ void Node::MeshMessageReceivedHandler(BaseConnection* connection, BaseConnection
             // 新增：收集混合模式統計
             else if(packet->actionType == (u8)NodeModuleTriggerActionMessages::COLLECT_MIXED_DATA)
             {
-                // 發送 HIGH priority 計數
+                 // 發送 HIGH priority 實際計數（含重傳）
                 SendModuleActionMessage(
                     MessageType::MODULE_TRIGGER_ACTION,
                     packetHeader->sender,
                     (u8)NodeModuleTriggerActionMessages::TRANSMIT_MIXED_HIGH_COUNT,
                     0,
-                    (u8*)&generateLoadHighSent,
-                    sizeof(generateLoadHighSent),
+                    (u8*)&generateLoadHighActualSent,
+                    sizeof(generateLoadHighActualSent),
                     false
                 );
                 // 發送 LOW priority 計數
@@ -1070,8 +1077,8 @@ void Node::MeshMessageReceivedHandler(BaseConnection* connection, BaseConnection
                     packetHeader->sender,
                     (u8)NodeModuleTriggerActionMessages::TRANSMIT_MIXED_LOW_COUNT,
                     0,
-                    (u8*)&generateLoadLowSent,
-                    sizeof(generateLoadLowSent),
+                    (u8*)&generateLoadLowActualSent,
+                    sizeof(generateLoadLowActualSent),
                     false
                 );
             }
@@ -1119,7 +1126,7 @@ void Node::MeshMessageReceivedHandler(BaseConnection* connection, BaseConnection
             //new find_degree
             else if (packet->actionType == (u8)NodeModuleTriggerActionMessages::FIND_DEGREE)
             {
-                TOTAL_NODE_NUM = 6;
+                TOTAL_NODE_NUM = 3;
 
                     /*初始化deg記憶體空間==-1*/
                 if (init == -1) {
@@ -3357,7 +3364,7 @@ void Node::TimerEventHandler(u16 passedTimeDs)
             DYNAMIC_ARRAY(payloadBuffer, generateLoadPayloadSize);
             CheckedMemset(payloadBuffer, generateLoadMagicNumber, generateLoadPayloadSize);
 
-            // 新增：標記 priority（支援混合交錯模式）
+            // 新增：標記 priority（支援混合交錯模式和單一優先級模式）
             if (generateLoadWithPriorityFlag && generateLoadPayloadSize > 0) {
                 u8 currentPriority = generateLoadPriority;
 
@@ -3410,6 +3417,14 @@ void Node::TimerEventHandler(u16 passedTimeDs)
                         generateLoadHighSent++;
                     } else if (remainingLow > 0) {
                         currentPriority = 3; // LOW priority
+                        generateLoadLowSent++;
+                    }
+                }else {
+                    // 單一優先級模式：根據設定的 priority 更新對應計數器
+                    // 這樣 snd_prio 才能收集到正確的數據
+                    if (currentPriority <= 1) { // HIGH or VITAL
+                        generateLoadHighSent++;
+                    } else { // MEDIUM or LOW
                         generateLoadLowSent++;
                     }
                 }
@@ -4170,6 +4185,11 @@ TerminalCommandHandlerReturnType Node::TerminalCommandHandler(const char* comman
                 GS->sndCount = (gltm.highAmount + gltm.lowAmount) * (TOTAL_NODE_NUM - 1) * requestHandle;
                 GS->rcvCount = 0;
 
+
+                // 重置本地實際發送計數（包含重傳）
+                generateLoadHighActualSent = 0;
+                generateLoadLowActualSent = 0;
+
                 // 重置所有統計陣列
                 for (int i = 0; i < TOTAL_NODE_NUM; i++) {
                     MultipleCountArray[i] = 0;
@@ -4234,12 +4254,22 @@ TerminalCommandHandlerReturnType Node::TerminalCommandHandler(const char* comman
                 GS->sndCount = gltm.amount * (TOTAL_NODE_NUM - 1) * requestHandle;
                 GS->rcvCount = 0;
 
-                // 重置接收端統計陣列
+                 // 重置本地實際發送計數（包含重傳）
+                generateLoadHighActualSent = 0;
+                generateLoadLowActualSent = 0;
+
+                // 重置接收端統計陣列（包括 priority 統計）
                 for (int i = 0; i < TOTAL_NODE_NUM; i++) {
                     MultipleCountArray[i] = 0;
                     CollsndCountArray[i] = 0;
                     avgDelay[i] = 0;
                     rcvCountArray[i] = 0;
+                    avgDelayHighPrio[i] = 0;
+                    avgDelayLowPrio[i] = 0;
+                    rcvCountHighPrio[i] = 0;
+                    rcvCountLowPrio[i] = 0;
+                    sndCountHighPrio[i] = 0;
+                    sndCountLowPrio[i] = 0;
                 }
 
                 // 5. 發送命令給所有節點
@@ -4388,7 +4418,8 @@ TerminalCommandHandlerReturnType Node::TerminalCommandHandler(const char* comman
              //新增命令: 统计高和低優先權封包同時傳送结果
             if (commandArgsSize > 3 && TERMARGS(3, "result_mixed"))
             {
-                trace("\\n========== Priority Statistics ==========" EOL);
+                trace("\\n========== Priority Statistics (Accurate with Retransmission Tracking) ==========" EOL);
+                trace("NOTE: snd counts now include retransmissions tracked at connection layer!" EOL);
 
                 u32 avgHigh = 0, avgLow = 0;
                 u32 totalHighRcv = 0, totalLowRcv = 0;
@@ -4399,22 +4430,11 @@ TerminalCommandHandlerReturnType Node::TerminalCommandHandler(const char* comman
                     if ((i+1) != destinationNode) {
                         u32 tempHigh = 0, tempLow = 0;
 
-                        // 获取目标发送数（不含重传）
-                        u32 highTargetCount = sndCountHighPrio[i];
-                        u32 lowTargetCount = sndCountLowPrio[i];
-                        u32 totalTargetCount = highTargetCount + lowTargetCount;
+                        // 直接使用連接層統計的實際發送數（包含重傳）
+                        // 這是準確的！因為每次發送時都檢查 payload 的 priority
+                        u32 highSendCount = sndCountHighPrio[i];
+                        u32 lowSendCount = sndCountLowPrio[i];
 
-                        // 计算实际发送数（包含重传），使用和 result 相同的公式
-                        u32 actualTotalSend = (CollsndCountArray[i] + (GS->MultipleUnit * MultipleCountArray[i]));
-
-                        // 按比例分配实际发送数到 HIGH 和 LOW
-                        // 先算 HIGH，然后 LOW = 总数 - HIGH，避免舍入误差
-                        u32 highSendCount = 0;
-                        u32 lowSendCount = 0;
-                        if (totalTargetCount > 0) {
-                            highSendCount = (actualTotalSend * highTargetCount) / totalTargetCount;
-                            lowSendCount = actualTotalSend - highSendCount;  // 用减法避免舍入误差
-                        }
                         if (rcvCountHighPrio[i] > 0) {
                             tempHigh = avgDelayHighPrio[i] / rcvCountHighPrio[i];
                             avgHigh += tempHigh;
@@ -4454,17 +4474,17 @@ TerminalCommandHandlerReturnType Node::TerminalCommandHandler(const char* comman
                         u32 avgLowDelay = avgLow / activeNodes;
                         if (avgHighDelay < avgLowDelay) {
                             u32 improvement = ((avgLowDelay - avgHighDelay) * 100) / avgLowDelay;
-                            trace("HIGH priority is %u%% faster" EOL, improvement);
+                            trace("HIGH priority is %u%% faster than LOW" EOL, improvement);
                         }
                     }
 
                     // 显示发送统计
                     u32 expectedTotal = GS->sndCount;
                     u32 actualTotal = totalHighSnd + totalLowSnd;
-                    trace("Expected send: %u, Actual send: %u (HIGH=%u, LOW=%u)" EOL,
+                    trace("Expected total: %u, Actual total: %u (HIGH=%u, LOW=%u)" EOL,
                         expectedTotal, actualTotal, totalHighSnd, totalLowSnd);
                 }
-                trace("=========================================" EOL);
+                trace("===============================================================================" EOL);
 
                 return TerminalCommandHandlerReturnType::SUCCESS;
             }

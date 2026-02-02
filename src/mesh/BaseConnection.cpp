@@ -202,6 +202,23 @@ void BaseConnection::FillTransmitBuffers()
             ConnPacketModule const* packet = (ConnPacketModule const*)packetHeader;
             if (packet->actionType == 5) {
                 outPacket->Currdirection= (direction == ConnectionDirection::DIRECTION_IN) ? 1 : 0;
+
+                // 統計實際發送數（包含重傳）- 累加到 ActualSent 計數器
+                // 這些計數器會通過 COLLECT_MIXED_DATA 機制傳送給 sink
+                const MessageLength payloadLength = packetLength - SIZEOF_CONN_PACKET_MODULE;
+                if (payloadLength > 0) {
+                    u8 firstByte = packet->data[0];
+
+                    if ((firstByte & 0xF0) == 0xF0) {
+                        u8 priority = firstByte & 0x0F;
+                        // 累加到實際發送計數（包含重傳）
+                        if (priority <= 1) { // HIGH or VITAL
+                            GS->node.generateLoadHighActualSent++;
+                        } else { // MEDIUM or LOW
+                            GS->node.generateLoadLowActualSent++;
+                        }
+                    }
+                }
             }
         }
 
