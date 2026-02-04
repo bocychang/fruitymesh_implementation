@@ -876,6 +876,8 @@ void Node::MeshMessageReceivedHandler(BaseConnection* connection, BaseConnection
                     generateLoadLowTarget = message->lowAmount * multiplier;    // 乘以 multiplier
                     generateLoadHighSent = 0;
                     generateLoadLowSent = 0;
+                    generateLoadHighActualSent = 0;  // 重置實際發送計數（含重傳）
+                    generateLoadLowActualSent = 0;   // 重置實際發送計數（含重傳）
                     generateLoadMixedCounter = 0;
                     generateLoadMessagesLeft = (message->highAmount + message->lowAmount) * multiplier;
                     generateLoadRequestHandle = 0;
@@ -2636,16 +2638,17 @@ joinMeBufferPacket* Node::DetermineBestClusterAsMaster()
 //Connect to big clusters but big clusters must connect nodes that are not able 
 u32 Node::CalculateClusterScoreAsMaster(const joinMeBufferPacket& packet) const
 {
-    if(1) return 0;
+    // if(1) return 0;
     //new test if slave node id > now node id return 0; 
     //if (packet.payload.sender < configuration.nodeId) return 0;    
     // if (packet.payload.sender != 5 && packet.payload.sender != 6) return 0; 
     // if (packet.payload.sender != 3 && packet.payload.sender != 4) return 0;  
     // if (packet.payload.sender != 1)  return 0; 
-    // if (packet.payload.sender != 2)  return 0; 
+    if (packet.payload.sender != 2)  return 0; 
     // if (packet.payload.sender != 3)  return 0; 
     // if (packet.payload.sender != 4)  return 0; 
     // if (packet.payload.sender != 5)  return 0; 
+    // if (packet.payload.sender != 6)  return 0; 
     
     // if (packet.payload.sender != 2 && packet.payload.sender != 3 && packet.payload.sender != 6)  return 0; 
 
@@ -4459,12 +4462,6 @@ TerminalCommandHandlerReturnType Node::TerminalCommandHandler(const char* comman
 
                 u32 activeNodes = TOTAL_NODE_NUM - 1;
                 if (activeNodes > 0) {
-                    // 计算整体重传统计
-                    u32 totalHighRetrans = (totalHighSnd > totalHighRcv) ? (totalHighSnd - totalHighRcv) : 0;
-                    u32 totalLowRetrans = (totalLowSnd > totalLowRcv) ? (totalLowSnd - totalLowRcv) : 0;
-                    u32 overallHighRetransRate = (totalHighRcv > 0) ? ((totalHighRetrans * 100) / totalHighRcv) : 0;
-                    u32 overallLowRetransRate = (totalLowRcv > 0) ? ((totalLowRetrans * 100) / totalLowRcv) : 0;
-
                     trace("\\nOverall: HIGH=%u ms (snd=%u, rcv=%u), LOW=%u ms (snd=%u, rcv=%u)" EOL,
                         totalHighRcv > 0 ? avgHigh / activeNodes : 0, totalHighSnd, totalHighRcv,
                         totalLowRcv > 0 ? avgLow / activeNodes : 0, totalLowSnd, totalLowRcv);
