@@ -138,6 +138,15 @@ QueuePriorityPair ChunkedPriorityPacketQueue::GetSendQueue()
         return retVal;
     }
 
+    //Per-priority droplet limits (higher = more send chances).
+    //Tune to favor HIGH while keeping LOW acceptable.
+    static constexpr std::array<u32, AMOUNT_OF_SEND_QUEUE_PRIORITIES> priorityDropletLimit = {
+        0, // VITAL (not used here)
+        8, // HIGH - 大幅提高，让 HIGH 几乎总是优先
+        2, // MEDIUM
+        1  // LOW - 保持最低但不为 0，避免饿死
+    };
+
     //We have to iterate twice in case every queue has a priority droplet overflow.
     //In such a case, all droplets are removed and we start again from the top.
     for (u32 repeat = 0; repeat < 2; repeat++)
@@ -147,7 +156,7 @@ QueuePriorityPair ChunkedPriorityPacketQueue::GetSendQueue()
             if (queues[i].HasMoreToLookAhead())
             {
                 priorityDroplets[i]++;
-                if (priorityDroplets[i] > AMOUNT_OF_PRIORITY_DROPLETS_UNTIL_OVERFLOW)
+                if (priorityDroplets[i] > priorityDropletLimit[i])
                 {
                     priorityDroplets[i] = 0;
                 }

@@ -313,6 +313,17 @@ private:
             u8 interleavingRatio; // 交錯比例：每 N 個封包中 HIGH 的數量 (預設 3 表示 3:1)
             u8 requestHandle;     // 支援 0-255，用於批量發送和統計
         };
+
+         // 新增：隨機比例模式結構（使用隨機數生成器按百分比分配 HIGH/LOW）
+        struct GenerateLoadRandomRatioMessage{
+            NodeId target;
+            u8 size;
+            u16 totalAmount;         // 總封包數量
+            u8 timeBetweenMessagesDs;
+            u8 highPercentage;       // HIGH priority 百分比 (0-100)
+            u8 requestHandle;        // 請求句柄（乘數），範圍 0-255
+        };
+
 #pragma pack(pop)
         //State for straggered connection interval updates
         u16 connUpdateIntervalMs = 0;
@@ -335,6 +346,11 @@ private:
         u32 generateLoadLowSent = 0;        // 計劃發送 LOW 數量（不含重傳）
         u8 generateLoadInterleavingRatio = 3; // 交錯比例 (預設 3:1)
         u32 generateLoadMixedCounter = 0;   // 混合模式計數器
+
+        // 新增：隨機比例模式變數
+        bool generateLoadRandomRatioMode = false; // 是否為隨機比例模式
+        u8 generateLoadRandomHighPercentage = 75; // HIGH priority 百分比 (0-100)
+
 
         constexpr static u8 generateLoadMagicNumber = 0x91;
         constexpr static u8 generateLoadPriorityMarker = 0xF0; // 标记 priority 包

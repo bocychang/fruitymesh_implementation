@@ -855,8 +855,50 @@ void Node::MeshMessageReceivedHandler(BaseConnection* connection, BaseConnection
                 trace("DEBUG: Received START_GENERATE_LOAD, payloadLength=%u, sizeof(GenerateLoadMixedMessage)=%u" EOL, 
                     payloadLength, sizeof(GenerateLoadMixedMessage));
 
+                // 檢查是否為隨機比例模式（使用特殊 requestHandle=0xFC）
+                if (packet->requestHandle == 0xFC && payloadLength >= sizeof(GenerateLoadRandomRatioMessage)) {
+                    // 隨機比例模式
+                    GenerateLoadRandomRatioMessage const * message = (GenerateLoadRandomRatioMessage const *)packet->data;
+                    generateLoadTarget = message->target;
+                    generateLoadPayloadSize = message->size;
+                    generateLoadTimeBetweenMessagesDs = message->timeBetweenMessagesDs;
+                    
+                    u8 multiplier = message->requestHandle;
+                    if (multiplier == 0) multiplier = 1; // 防止除以 0
+                    
+                    // 設定隨機比例模式參數
+                    generateLoadRandomRatioMode = true;
+                    generateLoadWithPriorityFlag = true;
+                    generateLoadMixedMode = false; // 清除混合交錯模式
+                    generateLoadRandomHighPercentage = message->highPercentage;
+                    
+                    // 初始化計數器
+                    generateLoadHighTarget = 0; // 隨機模式不預先設定目標
+                    generateLoadLowTarget = 0;
+                    generateLoadHighSent = 0;
+                    generateLoadLowSent = 0;
+                    generateLoadHighActualSent = 0;
+                    generateLoadLowActualSent = 0;
+                    generateLoadMessagesLeft = message->totalAmount * multiplier;
+                    generateLoadRequestHandle = 0;
+                    
+                    GS->CollsndCount = 0;
+                    GS->MultipleCount = 0;
+                    GS->MultipleUnit = multiplier;
+                    
+                    trace("DEBUG: gen_load_random_ratio - total=%u, highPct=%u%%, interval=%uds, multiplier=%u" EOL, 
+                        message->totalAmount, message->highPercentage, message->timeBetweenMessagesDs, multiplier);
+                    
+                    logt("NODE", "Generating RANDOM RATIO load. Target: %u size: %u total: %u highPct: %u%% multiplier: %u interval: %uds",
+                        message->target,
+                        message->size,
+                        message->totalAmount * multiplier,
+                        message->highPercentage,
+                        multiplier,
+                        message->timeBetweenMessagesDs);
+                }
                 // 檢查是否為混合交錯模式（使用特殊 requestHandle=0xFD）
-                if (packet->requestHandle == 0xFD && payloadLength >= sizeof(GenerateLoadMixedMessage)) {
+                else if (packet->requestHandle == 0xFD && payloadLength >= sizeof(GenerateLoadMixedMessage)) {
                     // 混合交錯模式
                     GenerateLoadMixedMessage const * message = (GenerateLoadMixedMessage const *)packet->data;
                     generateLoadTarget = message->target;
@@ -2638,13 +2680,13 @@ joinMeBufferPacket* Node::DetermineBestClusterAsMaster()
 //Connect to big clusters but big clusters must connect nodes that are not able 
 u32 Node::CalculateClusterScoreAsMaster(const joinMeBufferPacket& packet) const
 {
-    // if(1) return 0;
+    if(1) return 0;
     //new test if slave node id > now node id return 0; 
     //if (packet.payload.sender < configuration.nodeId) return 0;    
     // if (packet.payload.sender != 5 && packet.payload.sender != 6) return 0; 
     // if (packet.payload.sender != 3 && packet.payload.sender != 4) return 0;  
     // if (packet.payload.sender != 1)  return 0; 
-    if (packet.payload.sender != 2)  return 0; 
+    // if (packet.payload.sender != 2)  return 0; 
     // if (packet.payload.sender != 3)  return 0; 
     // if (packet.payload.sender != 4)  return 0; 
     // if (packet.payload.sender != 5)  return 0; 
@@ -3370,9 +3412,32 @@ void Node::TimerEventHandler(u16 passedTimeDs)
             // 新增：標記 priority（支援混合交錯模式和單一優先級模式）
             if (generateLoadWithPriorityFlag && generateLoadPayloadSize > 0) {
                 u8 currentPriority = generateLoadPriority;
+                // 隨機比例模式：使用隨機數生成器按百分比決定 priority
+                if (generateLoadRandomRatioMode) {
+                    // 生成 0-99 的隨機數
+                    u32 randomValue = Utility::GetRandomInteger() % 100;
+                    
+                    // 根據百分比決定 priority
+                    // 例如 highPercentage=75，則 randomValue < 75 時為 HIGH
+                    if (randomValue < generateLoadRandomHighPercentage) {
+                        currentPriority = 1; // HIGH priority
+                        generateLoadHighSent++;
+                    } else {
+                        currentPriority = 3; // LOW priority
+                        generateLoadLowSent++;
+                    }
+                    
+                    // Debug 輸出（每 50 個封包輸出一次，避免過多 log）
+                    if ((generateLoadHighSent + generateLoadLowSent) % 50 == 1) {
+                        trace("RANDOM_RATIO: sent HIGH=%u, LOW=%u, current=%s (rand=%u, pct=%u)" EOL,
+                            generateLoadHighSent, generateLoadLowSent,
+                            currentPriority == 1 ? "HIGH" : "LOW",
+                            randomValue, generateLoadRandomHighPercentage);
+                    }
+                }
 
                 // 混合交錯模式：智能演算法決定當前封包的優先級
-                if (generateLoadMixedMode) {
+                else if (generateLoadMixedMode) {
                     u32 remainingHigh = generateLoadHighTarget - generateLoadHighSent;
                     u32 remainingLow = generateLoadLowTarget - generateLoadLowSent;
 
@@ -4284,6 +4349,80 @@ TerminalCommandHandlerReturnType Node::TerminalCommandHandler(const char* comman
                             j,
                             (u8)NodeModuleTriggerActionMessages::START_GENERATE_LOAD,
                             requestHandle,
+                            (u8*)&gltm,
+                            sizeof(gltm),
+                            false
+                        );
+                    }
+                }
+                return TerminalCommandHandlerReturnType::SUCCESS;
+            }
+
+            // 新增命令：gen_load_random_ratio - 使用隨機數生成器按百分比分配 HIGH/LOW priority
+            if (commandArgsSize > 7 && TERMARGS(3, "gen_load_random_ratio"))
+            {
+                // 0:action, 1:this, 2:node, 3:cmd, 4:size, 5:totalAmt, 6:interval, 7:highPct, 8:handle(opt)
+                // 例如: action 1 node gen_load_random_ratio 30 200 1 75 1
+                // - size=30 bytes
+                // - totalAmount=200（每個節點發送200個封包）
+                // - interval=1 deciseconds
+                // - highPercentage=75（75%是HIGH，25%是LOW）
+                // - requestHandle=1（乘數）
+
+                GenerateLoadRandomRatioMessage gltm;
+                CheckedMemset(&gltm, 0, sizeof(GenerateLoadRandomRatioMessage));
+
+                // 1. 基本參數設定
+                gltm.target = destinationNode;
+                gltm.size = Utility::StringToU8(commandArgs[4]);
+                gltm.totalAmount = Utility::StringToU16(commandArgs[5]);
+                gltm.timeBetweenMessagesDs = Utility::StringToU8(commandArgs[6]);
+                gltm.highPercentage = Utility::StringToU8(commandArgs[7]);
+                
+                // 限制百分比範圍在 0-100
+                if (gltm.highPercentage > 100) gltm.highPercentage = 100;
+
+                // 2. 讀取 requestHandle（可選參數，預設 1）
+                const u8 requestHandle = commandArgsSize > 8 ? Utility::StringToU8(commandArgs[8]) : 1;
+                gltm.requestHandle = requestHandle;
+                
+                // 3. 統計設定
+                GS->MultipleUnit = requestHandle;
+                GS->sndCount = gltm.totalAmount * (TOTAL_NODE_NUM - 1) * requestHandle;
+                GS->rcvCount = 0;
+                
+                // 重置本地實際發送計數（包含重傳）
+                generateLoadHighActualSent = 0;
+                generateLoadLowActualSent = 0;
+                
+                // 重置所有統計陣列
+                for (int i = 0; i < TOTAL_NODE_NUM; i++) {
+                    MultipleCountArray[i] = 0;
+                    CollsndCountArray[i] = 0;
+                    avgDelay[i] = 0;
+                    rcvCountArray[i] = 0;
+                    avgDelayHighPrio[i] = 0;
+                    avgDelayLowPrio[i] = 0;
+                    rcvCountHighPrio[i] = 0;
+                    rcvCountLowPrio[i] = 0;
+                    sndCountHighPrio[i] = 0;
+                    sndCountLowPrio[i] = 0;
+                }
+
+                // 顯示配置信息
+                trace("Starting RANDOM RATIO load: total=%u, interval=%uds, highPct=%u%%, multiplier=%u" EOL, 
+                    gltm.totalAmount, gltm.timeBetweenMessagesDs, gltm.highPercentage, requestHandle);
+
+                // 4. 發送命令給所有節點
+                // 使用 0xFC 作為特殊標記來識別隨機比例模式
+                for (int j = 1; j <= TOTAL_NODE_NUM; j++)
+                {
+                    if (j != destinationNode) {
+                        SendModuleActionMessage(
+                            MessageType::MODULE_TRIGGER_ACTION,
+                            j,
+                            (u8)NodeModuleTriggerActionMessages::START_GENERATE_LOAD,
+                            0xFC, // 特殊標記：隨機比例模式
                             (u8*)&gltm,
                             sizeof(gltm),
                             false
