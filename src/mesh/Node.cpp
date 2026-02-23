@@ -1102,24 +1102,48 @@ void Node::MeshMessageReceivedHandler(BaseConnection* connection, BaseConnection
                     
             }
 
-            // 新增：收集混合模式統計
+            // 新增：收集混合模式統計（傳送目標發送數，不含重傳）
             else if(packet->actionType == (u8)NodeModuleTriggerActionMessages::COLLECT_MIXED_DATA)
             {
-                 // 發送 HIGH priority 實際計數（含重傳）
+                 // 對於隨機模式和混合模式，發送實際生成的HIGH/LOW數量（不含重傳）
+                // 這樣sink才能準確計算丟包率
+                // PDR = rcvCount / sndCount (不含重傳的目標數量)
+                
+                // 發送 HIGH priority 目標計數（不含重傳，實際生成的數量）
                 SendModuleActionMessage(
                     MessageType::MODULE_TRIGGER_ACTION,
                     packetHeader->sender,
                     (u8)NodeModuleTriggerActionMessages::TRANSMIT_MIXED_HIGH_COUNT,
                     0,
-                    (u8*)&generateLoadHighActualSent,
-                    sizeof(generateLoadHighActualSent),
+                    (u8*)&generateLoadHighSent,
+                    sizeof(generateLoadHighSent),
                     false
                 );
-                // 發送 LOW priority 計數
+                // 發送 LOW priority 目標計數（不含重傳，實際生成的數量）
                 SendModuleActionMessage(
                     MessageType::MODULE_TRIGGER_ACTION,
                     packetHeader->sender,
                     (u8)NodeModuleTriggerActionMessages::TRANSMIT_MIXED_LOW_COUNT,
+                    0,
+                    (u8*)&generateLoadLowSent,
+                    sizeof(generateLoadLowSent),
+                    false
+                );
+                // 發送 HIGH priority 實際發送數（包含重傳）
+                SendModuleActionMessage(
+                    MessageType::MODULE_TRIGGER_ACTION,
+                    packetHeader->sender,
+                    (u8)NodeModuleTriggerActionMessages::TRANSMIT_MIXED_HIGH_ACTUAL,
+                    0,
+                    (u8*)&generateLoadHighActualSent,
+                    sizeof(generateLoadHighActualSent),
+                    false
+                );
+                // 發送 LOW priority 實際發送數（包含重傳）
+                SendModuleActionMessage(
+                    MessageType::MODULE_TRIGGER_ACTION,
+                    packetHeader->sender,
+                    (u8)NodeModuleTriggerActionMessages::TRANSMIT_MIXED_LOW_ACTUAL,
                     0,
                     (u8*)&generateLoadLowActualSent,
                     sizeof(generateLoadLowActualSent),
@@ -1146,6 +1170,29 @@ void Node::MeshMessageReceivedHandler(BaseConnection* connection, BaseConnection
                 }
                 if (packetHeader->sender > 0 && packetHeader->sender <= 100) {
                     sndCountLowPrio[packetHeader->sender - 1] = count;
+                }
+            }
+
+            // 接收 HIGH priority 實際發送數（包含重傳）
+            else if(packet->actionType == (u8)NodeModuleTriggerActionMessages::TRANSMIT_MIXED_HIGH_ACTUAL)
+            {
+                u32 count = 0;
+                if (sendData->dataLength.GetRaw() >= SIZEOF_CONN_PACKET_MODULE + sizeof(u32)) {
+                    CheckedMemcpy(&count, packet->data, sizeof(u32));
+                }
+                if (packetHeader->sender > 0 && packetHeader->sender <= 100) {
+                    sndCountHighPrioActual[packetHeader->sender - 1] = count;
+                }
+            }
+            // 接收 LOW priority 實際發送數（包含重傳）
+            else if(packet->actionType == (u8)NodeModuleTriggerActionMessages::TRANSMIT_MIXED_LOW_ACTUAL)
+            {
+                u32 count = 0;
+                if (sendData->dataLength.GetRaw() >= SIZEOF_CONN_PACKET_MODULE + sizeof(u32)) {
+                    CheckedMemcpy(&count, packet->data, sizeof(u32));
+                }
+                if (packetHeader->sender > 0 && packetHeader->sender <= 100) {
+                    sndCountLowPrioActual[packetHeader->sender - 1] = count;
                 }
             }
 
@@ -3428,12 +3475,12 @@ void Node::TimerEventHandler(u16 passedTimeDs)
                     }
                     
                     // Debug 輸出（每 50 個封包輸出一次，避免過多 log）
-                    if ((generateLoadHighSent + generateLoadLowSent) % 50 == 1) {
-                        trace("RANDOM_RATIO: sent HIGH=%u, LOW=%u, current=%s (rand=%u, pct=%u)" EOL,
-                            generateLoadHighSent, generateLoadLowSent,
-                            currentPriority == 1 ? "HIGH" : "LOW",
-                            randomValue, generateLoadRandomHighPercentage);
-                    }
+                    // if ((generateLoadHighSent + generateLoadLowSent) % 50 == 1) {
+                    //     trace("RANDOM_RATIO: sent HIGH=%u, LOW=%u, current=%s (rand=%u, pct=%u)" EOL,
+                    //         generateLoadHighSent, generateLoadLowSent,
+                    //         currentPriority == 1 ? "HIGH" : "LOW",
+                    //         randomValue, generateLoadRandomHighPercentage);
+                    // }
                 }
 
                 // 混合交錯模式：智能演算法決定當前封包的優先級
@@ -4560,22 +4607,28 @@ TerminalCommandHandlerReturnType Node::TerminalCommandHandler(const char* comman
              //新增命令: 统计高和低優先權封包同時傳送结果
             if (commandArgsSize > 3 && TERMARGS(3, "result_mixed"))
             {
-                trace("\\n========== Priority Statistics (Accurate with Retransmission Tracking) ==========" EOL);
-                trace("NOTE: snd counts now include retransmissions tracked at connection layer!" EOL);
+                trace("\\n========== Priority Statistics (Target Counts - No Retransmissions) ==========" EOL);
+                trace("NOTE: snd = TARGET packets generated by random/mixed mode (no retransmit)" EOL);
+                trace("      snd_actual = ACTUAL packets sent including retransmissions" EOL);
+                trace("      PDR = rcv / snd (accurate packet delivery ratio)" EOL);
 
                 u32 avgHigh = 0, avgLow = 0;
                 u32 totalHighRcv = 0, totalLowRcv = 0;
                 u32 totalHighSnd = 0, totalLowSnd = 0;
+                u32 totalHighSndActual = 0, totalLowSndActual = 0;
 
                 for (int i = 0; i < TOTAL_NODE_NUM; i++)
                 {
                     if ((i+1) != destinationNode) {
                         u32 tempHigh = 0, tempLow = 0;
 
-                        // 直接使用連接層統計的實際發送數（包含重傳）
-                        // 這是準確的！因為每次發送時都檢查 payload 的 priority
+                         // 使用目標發送數（不含重傳）
+                        // 對於隨機模式，這是實際隨機生成的 HIGH/LOW 數量
+                        // 可以準確計算 PDR = rcv / snd
                         u32 highSendCount = sndCountHighPrio[i];
                         u32 lowSendCount = sndCountLowPrio[i];
+                        u32 highSendActual = sndCountHighPrioActual[i];
+                        u32 lowSendActual = sndCountLowPrioActual[i];
 
                         if (rcvCountHighPrio[i] > 0) {
                             tempHigh = avgDelayHighPrio[i] / rcvCountHighPrio[i];
@@ -4591,19 +4644,32 @@ TerminalCommandHandlerReturnType Node::TerminalCommandHandler(const char* comman
 
                         totalHighSnd += highSendCount;
                         totalLowSnd += lowSendCount;
+                        totalHighSndActual += highSendActual;
+                        totalLowSndActual += lowSendActual;
 
-                        trace("Node %d: HIGH=%u ms (snd=%u, rcv=%u), LOW=%u ms (snd=%u, rcv=%u)" EOL, 
-                            i + 1, 
-                            tempHigh, highSendCount, rcvCountHighPrio[i],
-                            tempLow, lowSendCount, rcvCountLowPrio[i]);
+                        // 計算各節點的 PDR
+                        u32 highPDR = highSendCount > 0 ? (rcvCountHighPrio[i] * 100) / highSendCount : 0;
+                        u32 lowPDR = lowSendCount > 0 ? (rcvCountLowPrio[i] * 100) / lowSendCount : 0;
+                        
+                        trace("Node %u:" EOL, i + 1);
+                        trace("  HIGH: %u ms | snd=%u | snd_actual=%u | rcv=%u | PDR=%u%%" EOL, 
+                            tempHigh, highSendCount, highSendActual, rcvCountHighPrio[i], highPDR);
+                        trace("  LOW:  %u ms | snd=%u | snd_actual=%u | rcv=%u | PDR=%u%%" EOL, 
+                            tempLow, lowSendCount, lowSendActual, rcvCountLowPrio[i], lowPDR);
                     }
                 }
 
                 u32 activeNodes = TOTAL_NODE_NUM - 1;
                 if (activeNodes > 0) {
-                    trace("\\nOverall: HIGH=%u ms (snd=%u, rcv=%u), LOW=%u ms (snd=%u, rcv=%u)" EOL,
-                        totalHighRcv > 0 ? avgHigh / activeNodes : 0, totalHighSnd, totalHighRcv,
-                        totalLowRcv > 0 ? avgLow / activeNodes : 0, totalLowSnd, totalLowRcv);
+                    // 計算整體 PDR
+                    u32 overallHighPDR = totalHighSnd > 0 ? (totalHighRcv * 100) / totalHighSnd : 0;
+                    u32 overallLowPDR = totalLowSnd > 0 ? (totalLowRcv * 100) / totalLowSnd : 0;
+                    
+                    trace("\\nOverall:" EOL);
+                    trace("  HIGH: %u ms | snd=%u | snd_actual=%u | rcv=%u | PDR=%u%%" EOL,
+                        totalHighRcv > 0 ? avgHigh / activeNodes : 0, totalHighSnd, totalHighSndActual, totalHighRcv, overallHighPDR);
+                    trace("  LOW:  %u ms | snd=%u | snd_actual=%u | rcv=%u | PDR=%u%%" EOL,
+                        totalLowRcv > 0 ? avgLow / activeNodes : 0, totalLowSnd, totalLowSndActual, totalLowRcv, overallLowPDR);
 
                     if (totalHighRcv > 0 && totalLowRcv > 0) {
                         u32 avgHighDelay = avgHigh / activeNodes;
