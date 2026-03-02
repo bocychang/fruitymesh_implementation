@@ -353,6 +353,10 @@ private:
         bool generateLoadRandomRatioMode = false; // 是否為隨機比例模式
         u8 generateLoadRandomHighPercentage = 75; // HIGH priority 百分比 (0-100)
 
+        // 新增：50%資料過濾變數（只記錄後50%）
+        u32 generateLoadTotalMessages = 0;       // 總訊息數量
+        u32 generateLoadSentCount = 0;           // 已發送訊息計數
+        bool generateLoadRecordingStarted = false; // 是否已開始記錄（達到50%後）
 
         constexpr static u8 generateLoadMagicNumber = 0x91;
         constexpr static u8 generateLoadPriorityMarker = 0xF0; // 标记 priority 包
