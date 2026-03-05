@@ -1085,10 +1085,10 @@ void Node::MeshMessageReceivedHandler(BaseConnection* connection, BaseConnection
                             shouldStartRecording = (receivedSeqNum > (generateLoadExpectedPerSender / 2));
                             
                             // Debug輸出：每50個封包輸出一次
-                            if (generateLoadReceivedPerSender[packetHeader->sender - 1] % 50 == 1) {
-                                trace("SEQ_CHECK: sender=%u, seqNum=%u, threshold=%u, shouldStart=%d" EOL,
-                                    packetHeader->sender, receivedSeqNum, generateLoadExpectedPerSender / 2, shouldStartRecording);
-                            }
+                            // if (generateLoadReceivedPerSender[packetHeader->sender - 1] % 50 == 1) {
+                            //     trace("SEQ_CHECK: sender=%u, seqNum=%u, threshold=%u, shouldStart=%d" EOL,
+                            //         packetHeader->sender, receivedSeqNum, generateLoadExpectedPerSender / 2, shouldStartRecording);
+                            // }
                         } else {
                             // 備用：使用接收數量判斷（不準確，受丟包影響）
                             shouldStartRecording = (generateLoadReceivedPerSender[packetHeader->sender - 1] > (generateLoadExpectedPerSender / 2));
@@ -1105,30 +1105,35 @@ void Node::MeshMessageReceivedHandler(BaseConnection* connection, BaseConnection
                         rcvCountHighPrio[packetHeader->sender - 1] = 0;
                         rcvCountLowPrio[packetHeader->sender - 1] = 0;
                         
-                        if (hasSeqNum) {
-                                trace("INFO: Sink reached 50%% from sender %u using SEQUENCE NUMBER (seqNum=%u, expected=%u/2=%u)" EOL,
-                                    packetHeader->sender, receivedSeqNum, generateLoadExpectedPerSender, generateLoadExpectedPerSender / 2);
-                        } else {
-                                trace("INFO: Sink reached 50%% from sender %u using RECEIVE COUNT (rcv=%u/%u)" EOL,
-                                    packetHeader->sender, generateLoadReceivedPerSender[packetHeader->sender - 1], generateLoadExpectedPerSender);
-                        }
+                        // if (hasSeqNum) {
+                        //         trace("INFO: Sink reached 50%% from sender %u using SEQUENCE NUMBER (seqNum=%u, expected=%u/2=%u)" EOL,
+                        //             packetHeader->sender, receivedSeqNum, generateLoadExpectedPerSender, generateLoadExpectedPerSender / 2);
+                        // } else {
+                        //         trace("INFO: Sink reached 50%% from sender %u using RECEIVE COUNT (rcv=%u/%u)" EOL,
+                        //             packetHeader->sender, generateLoadReceivedPerSender[packetHeader->sender - 1], generateLoadExpectedPerSender);
+                        // }
                     }
                 }
                 
                 // 只在達到50%後才累加統計數據
                 if (generateLoadSinkRecordingStarted[packetHeader->sender - 1]) {
-                    avgDelay[packetHeader->sender - 1] += packetDelay;
-                    rcvCountArray[packetHeader->sender - 1] += 1;
-                    GS->rcvCount += 1; // 累加全局接收计数
+                     u32 maxRcvCount = generateLoadExpectedPerSender / 2;
                     
                     // 新增：分别统计 high/low priority
-                    if (hasPriorityMarker) {
-                        if (receivedPriority <= 1) { // HIGH or VITAL
-                            avgDelayHighPrio[packetHeader->sender - 1] += packetDelay;
-                            rcvCountHighPrio[packetHeader->sender - 1] += 1;
-                        } else { // MEDIUM or LOW
-                            avgDelayLowPrio[packetHeader->sender - 1] += packetDelay;
-                            rcvCountLowPrio[packetHeader->sender - 1] += 1;
+                     if (rcvCountArray[packetHeader->sender - 1] < maxRcvCount) {
+                        avgDelay[packetHeader->sender - 1] += packetDelay;
+                        rcvCountArray[packetHeader->sender - 1] += 1;
+                        GS->rcvCount += 1; // 累加全局接收计数
+                        
+                        // 新增：分别统计 high/low priority
+                        if (hasPriorityMarker) {
+                            if (receivedPriority <= 1) { // HIGH or VITAL
+                                avgDelayHighPrio[packetHeader->sender - 1] += packetDelay;
+                                rcvCountHighPrio[packetHeader->sender - 1] += 1;
+                            } else { // MEDIUM or LOW
+                                avgDelayLowPrio[packetHeader->sender - 1] += packetDelay;
+                                rcvCountLowPrio[packetHeader->sender - 1] += 1;
+                            }
                         }
                     }
                 }
@@ -1292,7 +1297,7 @@ void Node::MeshMessageReceivedHandler(BaseConnection* connection, BaseConnection
             //new find_degree
             else if (packet->actionType == (u8)NodeModuleTriggerActionMessages::FIND_DEGREE)
             {
-                TOTAL_NODE_NUM = 3;
+                TOTAL_NODE_NUM = 6;
 
                     /*初始化deg記憶體空間==-1*/
                 if (init == -1) {
@@ -2802,13 +2807,13 @@ joinMeBufferPacket* Node::DetermineBestClusterAsMaster()
 //Connect to big clusters but big clusters must connect nodes that are not able 
 u32 Node::CalculateClusterScoreAsMaster(const joinMeBufferPacket& packet) const
 {
-    if(1) return 0;
+    // if(1) return 0;
     //new test if slave node id > now node id return 0; 
     //if (packet.payload.sender < configuration.nodeId) return 0;    
     // if (packet.payload.sender != 5 && packet.payload.sender != 6) return 0; 
     // if (packet.payload.sender != 3 && packet.payload.sender != 4) return 0;  
     // if (packet.payload.sender != 1)  return 0; 
-    // if (packet.payload.sender != 2)  return 0; 
+    if (packet.payload.sender != 2)  return 0; 
     // if (packet.payload.sender != 3)  return 0; 
     // if (packet.payload.sender != 4)  return 0; 
     // if (packet.payload.sender != 5)  return 0; 
@@ -3547,8 +3552,8 @@ void Node::TimerEventHandler(u16 passedTimeDs)
                     GS->CollsndCount = 0;
                     GS->MultipleCount = 0;
                     
-                    trace("INFO: Reached 50%% threshold (%u/%u), resetting send statistics to record only last 50%%" EOL,
-                        generateLoadSentCount, generateLoadTotalMessages);
+                    // trace("INFO: Reached 50%% threshold (%u/%u), resetting send statistics to record only last 50%%" EOL,
+                    //     generateLoadSentCount, generateLoadTotalMessages);
                 }
             }
 
@@ -3659,10 +3664,10 @@ void Node::TimerEventHandler(u16 passedTimeDs)
                 payloadBuffer[currentOffset + 3] = (generateLoadSentCount >> 24) & 0xFF;
                 
                 // Debug: 每100個封包輸出一次序列號
-                if (generateLoadSentCount % 100 == 1) {
-                    trace("SEQ_NUM: Sent packet with seqNum=%u (total=%u, 50%%=%u)" EOL,
-                        generateLoadSentCount, generateLoadTotalMessages, generateLoadTotalMessages / 2);
-                }
+                // if (generateLoadSentCount % 100 == 1) {
+                //     trace("SEQ_NUM: Sent packet with seqNum=%u (total=%u, 50%%=%u)" EOL,
+                //         generateLoadSentCount, generateLoadTotalMessages, generateLoadTotalMessages / 2);
+                // }
             }
 
             //new

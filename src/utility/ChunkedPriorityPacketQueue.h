@@ -46,7 +46,7 @@ struct QueuePriorityPairConst
     DeliveryPriority priority;
 };
 
-constexpr u32 AMOUNT_OF_PRIORITY_DROPLETS_UNTIL_OVERFLOW = 10;
+constexpr u32 AMOUNT_OF_PRIORITY_DROPLETS_UNTIL_OVERFLOW = 2;
 static_assert(AMOUNT_OF_PRIORITY_DROPLETS_UNTIL_OVERFLOW > 0, "Must be at least 1, else we always overflow and never send.");
 
 class ChunkedPriorityPacketQueue
