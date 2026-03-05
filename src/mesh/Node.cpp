@@ -3251,10 +3251,21 @@ void Node::TimerEventHandler(u16 passedTimeDs)
     else if (delayTime == 0)
     {
         delayTime = -1;
-        const char* args[] = {
-            "action", cmd[1], "node", "multi_generate_load", cmd[4], cmd[5], cmd[6], cmd[7], cmd[8]
-        };
-        TerminalCommandHandlerReturnType result = this->TerminalCommandHandler(args, 9);
+        // Check which command to trigger based on cmd[3]
+        if (strcmp(cmd[3], "sync_gen_load_random_ratio") == 0)
+        {
+            const char* args[] = {
+                "action", cmd[1], "node", "gen_load_random_ratio", cmd[4], cmd[5], cmd[6], cmd[7], cmd[8]
+            };
+            TerminalCommandHandlerReturnType result = this->TerminalCommandHandler(args, 9);
+        }
+        else // Default: multi_generate_load
+        {
+            const char* args[] = {
+                "action", cmd[1], "node", "multi_generate_load", cmd[4], cmd[5], cmd[6], cmd[7], cmd[8]
+            };
+            TerminalCommandHandlerReturnType result = this->TerminalCommandHandler(args, 9);
+        }
     }
     //synctime    
     if(ssettime>0)
@@ -4346,6 +4357,29 @@ TerminalCommandHandlerReturnType Node::TerminalCommandHandler(const char* comman
 
                 ssettime = 30;
                 delayTime = Utility::TerminalArgumentToNodeId(commandArgs[8]);;
+                return TerminalCommandHandlerReturnType::SUCCESS;
+            }
+
+            // 新增命令：sync_gen_load_random_ratio - 同步後發送隨機比例負載
+            if (commandArgsSize > 8 && TERMARGS(3, "sync_gen_load_random_ratio"))
+            {
+                //  0      1    2                      3           4     5          6        7          8           9
+                //action this node sync_gen_load_random_ratio size totalAmt interval highPct {handle} delayTime
+                // 例如: action 1 node sync_gen_load_random_ratio 30 200 1 75 1 10
+                //       先同步時間，延遲10秒後，所有節點同時開始發送隨機比例的封包
+
+                cmd[0] = commandArgs[0];
+                cmd[1] = commandArgs[1];
+                cmd[2] = commandArgs[2];
+                cmd[3] = commandArgs[3];
+                cmd[4] = commandArgs[4];
+                cmd[5] = commandArgs[5];
+                cmd[6] = commandArgs[6];
+                cmd[7] = commandArgs[7];
+                cmd[8] = commandArgs[8];
+
+                ssettime = 30;
+                delayTime = Utility::TerminalArgumentToNodeId(commandArgs[9]);
                 return TerminalCommandHandlerReturnType::SUCCESS;
             }
 

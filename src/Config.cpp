@@ -149,7 +149,7 @@ void Conf::LoadDefaults(){
     meshScanWindowHigh = 16; //FIXME_HAL: 12 units = 7.5ms (0.625ms steps)
 
     meshScanIntervalLow = (u16)MSEC_TO_UNITS(140, CONFIG_UNIT_0_625_MS);
-    meshScanWindowLow = (u16)MSEC_TO_UNITS(10, CONFIG_UNIT_0_625_MS);
+    meshScanWindowLow = (u16)MSEC_TO_UNITS(140, CONFIG_UNIT_0_625_MS);
 
     highDiscoveryTimeoutSec = 0;
 
